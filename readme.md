@@ -12,3 +12,26 @@ cargo run -- \
   --target-database <TARGET_DATABASE> \
   --require-tls
 ```
+
+## Linux Requirements
+
+If your database provider requires SSL/TLS connections, OpenSSL must be installed.
+
+### Ubuntu / Debian
+
+```bash
+sudo apt update
+sudo apt install openssl libssl-dev ca-certificates
+```
+
+### Fedora / RHEL
+
+```bash
+sudo dnf install openssl openssl-devel ca-certificates
+```
+
+### Arch Linux
+
+```bash
+sudo pacman -S openssl ca-certificates
+```
