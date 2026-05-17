@@ -157,7 +157,7 @@ fn main() {
         host: args.target_host,
         username: args.target_username,
         password: args.target_password,
-        port: args.source_port,
+        port: args.target_port,
         database: args.target_database,
         require_tls: args.target_requires_tls,
     };
@@ -213,6 +213,16 @@ fn main() {
             return;
         }
     };
+
+    // USE A TRANSACTION FOR ANYTHING THAT MODIFIES THE TARGET DB
+    let mut target_transaction: postgres::Transaction<'_> = match target_client.transaction() {
+        Ok(x) => x,
+        Err(e) => {
+            println!("ERROR: {:#?}", e);
+            return;
+        }
+    };
+
     if num_of_target_tables > 0 {
         loop {
             print!(
@@ -232,7 +242,7 @@ fn main() {
                     return; // end program
                 }
                 "y" => {
-                    match remove_target_tables(&mut target_client, "public") {
+                    match remove_target_tables(&mut target_transaction, "public") {
                         Ok(x) => {}
                         Err(e) => {
                             println!("ERROR: {:#?}", e);
@@ -261,17 +271,8 @@ fn main() {
         create_table_queries.push(generate_create_table_query(t));
     }
 
-    // start a transaction that will create all the tables on the target client
-    let mut transaction = match target_client.transaction() {
-        Ok(x) => x,
-        Err(e) => {
-            println!("ERROR: {:#?}", e);
-            return;
-        }
-    };
-
     for q in create_table_queries {
-        match transaction.execute(&q, &[]) {
+        match target_transaction.execute(&q, &[]) {
             Ok(_) => {}
             Err(e) => {
                 println!("ERROR: {:#?}", e);
@@ -280,7 +281,7 @@ fn main() {
         }
     }
 
-    match transaction.commit() {
+    match target_transaction.commit() {
         Ok(_) => {}
         Err(e) => {
             println!("ERROR: {:#?}", e);
@@ -308,7 +309,10 @@ fn target_db_has_tables(client: &mut Client, schema: &str) -> Result<i32, Postgr
     Ok(q.len() as i32)
 }
 
-fn remove_target_tables(client: &mut Client, schema: &str) -> Result<(), PostgresError> {
+fn remove_target_tables(
+    client: &mut postgres::Transaction<'_>,
+    schema: &str,
+) -> Result<(), PostgresError> {
     // cant parameratize scheama into query, create custom string
     let query = format!(
         "
@@ -415,14 +419,18 @@ fn generate_create_table_query(table: Table) -> String {
     // create each columns sql definitions
     for col in table.columns {
         let mut col_str = format!("{} {} ", col.name.trim(), col.data_type.to_sql().trim()); // "is_verified BOOLEAN"
-        if !col.is_nullable {col_str.push_str("NOT NULL ")} // "is_verified BOOLEAN NOT NULL"
-        if col.is_primary_key {col_str.push_str("PRIMARY KEY")} // "is_verified BOOLEAN NOT NULL PRIMARY KEY"
+        if !col.is_nullable {
+            col_str.push_str("NOT NULL ")
+        } // "is_verified BOOLEAN NOT NULL"
+        if col.is_primary_key {
+            col_str.push_str("PRIMARY KEY")
+        } // "is_verified BOOLEAN NOT NULL PRIMARY KEY"
 
         cols.push(col_str);
     }
     let col_sql_defs = cols.join(",");
 
-    format!("CREATE TABLE {} ({});",table.name, col_sql_defs)
+    format!("CREATE TABLE {} ({});", table.name, col_sql_defs)
 }
 
 fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String> {
