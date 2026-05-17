@@ -1,4 +1,8 @@
-use std::{collections::HashMap, error::Error};
+use std::{
+    collections::HashMap,
+    error::Error,
+    io::{self, Read, Write},
+};
 
 use clap::Parser;
 use native_tls::TlsConnector;
@@ -199,6 +203,49 @@ fn main() {
         }
     };
 
+    // first check to see if the target db already has tables
+    // in the specified schema
+    // if so, the user must confirm to continue (will delete all those tables)
+    let num_of_target_tables = match target_db_has_tables(&mut target_client, "public") {
+        Ok(x) => x,
+        Err(e) => {
+            println!("ERROR: {:#?}", e);
+            return;
+        }
+    };
+    if num_of_target_tables > 0 {
+        loop {
+            print!(
+                "Your target database already has {} tables. Would you like to continue (y/n): ",
+                num_of_target_tables
+            );
+
+            io::stdout().flush().unwrap();
+            let mut confirm = String::new();
+            io::stdin()
+                .read_line(&mut confirm)
+                .expect("error while reading input");
+            confirm = String::from(confirm.trim().to_lowercase());
+
+            match confirm.as_str() {
+                "n" => {
+                    return; // end program
+                }
+                "y" => {
+                    match remove_target_tables(&mut target_client, "public") {
+                        Ok(x) => {}
+                        Err(e) => {
+                            println!("ERROR: {:#?}", e);
+                            return;
+                        }
+                    }
+                    break;
+                }
+                _ => continue,
+            }
+        }
+    }
+
     // get all the source tables that will be cloned
     let tables_result = match get_tables_structure(&mut source_client, "public") {
         Ok(x) => x,
@@ -242,6 +289,39 @@ fn main() {
     }
 
     println!("\n\n\n\n\n\nDONE OK!");
+}
+
+fn target_db_has_tables(client: &mut Client, schema: &str) -> Result<i32, PostgresError> {
+    // this will check to see if the target db has tables already in the specified schema
+
+    let q = client.query(
+        "
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = $1
+    AND table_type = 'BASE TABLE'
+    ORDER BY table_name;
+    ",
+        &[&schema],
+    )?;
+
+    Ok(q.len() as i32)
+}
+
+fn remove_target_tables(client: &mut Client, schema: &str) -> Result<(), PostgresError> {
+    // cant parameratize scheama into query, create custom string
+    let query = format!(
+        "
+        DROP SCHEMA {} CASCADE;
+        
+        CREATE SCHEMA {};
+    ",
+        schema, schema
+    );
+
+    client.batch_execute(&query)?;
+
+    Ok(())
 }
 
 fn build_postgres_conn_string(config: DbConfig) -> String {
