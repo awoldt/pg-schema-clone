@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, os::raw};
+use std::{collections::HashMap, error::Error};
 
 use clap::Parser;
 use native_tls::TlsConnector;
@@ -147,8 +147,19 @@ fn main() {
         database: args.source_database,
         require_tls: args.source_requires_tls,
     };
+    let source_conn_string: String = build_postgres_conn_string(source_db_config);
 
-    let tls_connector = match TlsConnector::new() {
+    let target_db_config: DbConfig = DbConfig {
+        host: args.target_host,
+        username: args.target_username,
+        password: args.target_password,
+        port: args.source_port,
+        database: args.target_database,
+        require_tls: args.target_requires_tls,
+    };
+    let target_conn_string: String = build_postgres_conn_string(target_db_config);
+
+    let tls_connector = match TlsConnector::builder().build() {
         Ok(v) => v,
         Err(_e) => {
             println!("error while establishing a TLS connector");
@@ -156,13 +167,20 @@ fn main() {
         }
     };
 
-    let tls = MakeTlsConnector::new(tls_connector);
-    let source_conn_string: String = build_postgres_conn_string(source_db_config);
     let source_client_result: Result<Client, PostgresError>;
     if args.source_requires_tls {
+        let tls = MakeTlsConnector::new(tls_connector.clone());
         source_client_result = Client::connect(&source_conn_string, tls);
     } else {
         source_client_result = Client::connect(&source_conn_string, NoTls);
+    }
+
+    let target_client_result: Result<Client, PostgresError>;
+    if args.target_requires_tls {
+        let tls = MakeTlsConnector::new(tls_connector.clone());
+        target_client_result = Client::connect(&target_conn_string, tls);
+    } else {
+        target_client_result = Client::connect(&target_conn_string, NoTls);
     }
 
     let mut source_client: Client = match source_client_result {
@@ -173,6 +191,15 @@ fn main() {
         }
     };
 
+    let mut target_client: Client = match target_client_result {
+        Ok(client) => client,
+        Err(e) => {
+            println!("ERROR: {:#?}", e);
+            return;
+        }
+    };
+
+    // get all the source tables that will be cloned
     let tables_result = match get_tables_structure(&mut source_client, "public") {
         Ok(x) => x,
         Err(e) => {
@@ -181,13 +208,40 @@ fn main() {
         }
     };
 
+    // generate the CREATE query for each table
+    let mut create_table_queries: Vec<String> = vec![];
     for t in tables_result {
-        let s = generate_create_table_query(t);
-        println!("{}", s)
+        create_table_queries.push(generate_create_table_query(t));
     }
 
+    // start a transaction that will create all the tables on the target client
+    let mut transaction = match target_client.transaction() {
+        Ok(x) => x,
+        Err(e) => {
+            println!("ERROR: {:#?}", e);
+            return;
+        }
+    };
 
+    for q in create_table_queries {
+        match transaction.execute(&q, &[]) {
+            Ok(_) => {}
+            Err(e) => {
+                println!("ERROR: {:#?}", e);
+                return;
+            }
+        }
+    }
 
+    match transaction.commit() {
+        Ok(_) => {}
+        Err(e) => {
+            println!("ERROR: {:#?}", e);
+            return;
+        }
+    }
+
+    println!("\n\n\n\n\n\nDONE OK!");
 }
 
 fn build_postgres_conn_string(config: DbConfig) -> String {
@@ -281,7 +335,11 @@ fn generate_create_table_query(table: Table) -> String {
     // create each columns sql definitions
     for col in table.columns {
         if col.is_primary_key {
-            cols.push(format!("{} {} PRIMARY KEY", col.name, col.data_type.to_sql()));
+            cols.push(format!(
+                "{} {} PRIMARY KEY",
+                col.name,
+                col.data_type.to_sql()
+            ));
         } else {
             cols.push(format!("{} {}", col.name, col.data_type.to_sql()));
         }
@@ -294,8 +352,7 @@ fn generate_create_table_query(table: Table) -> String {
             {}
         );
     ",
-        table.name, 
-        col_sql_defs
+        table.name, col_sql_defs
     )
 }
 
