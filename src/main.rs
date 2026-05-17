@@ -203,10 +203,8 @@ fn main() {
         }
     };
 
-    // first check to see if the target db already has tables
-    // in the specified schema
-    // if so, the user must confirm to continue (will delete all those tables)
-    let num_of_target_tables = match target_db_has_tables(&mut target_client, "public") {
+    // USE A TRANSACTION FOR ANYTHING THAT DEALS WITH THE TARGET DB
+    let mut target_transaction: postgres::Transaction<'_> = match target_client.transaction() {
         Ok(x) => x,
         Err(e) => {
             println!("ERROR: {:#?}", e);
@@ -214,8 +212,10 @@ fn main() {
         }
     };
 
-    // USE A TRANSACTION FOR ANYTHING THAT MODIFIES THE TARGET DB
-    let mut target_transaction: postgres::Transaction<'_> = match target_client.transaction() {
+    // first check to see if the target db already has tables
+    // in the specified schema
+    // if so, the user must confirm to continue (will delete all those tables)
+    let num_of_target_tables = match target_db_has_tables(&mut target_transaction, "public") {
         Ok(x) => x,
         Err(e) => {
             println!("ERROR: {:#?}", e);
@@ -292,7 +292,10 @@ fn main() {
     println!("\n\n\n\n\n\nDONE OK!");
 }
 
-fn target_db_has_tables(client: &mut Client, schema: &str) -> Result<i32, PostgresError> {
+fn target_db_has_tables(
+    client: &mut postgres::Transaction<'_>,
+    schema: &str,
+) -> Result<i32, PostgresError> {
     // this will check to see if the target db has tables already in the specified schema
 
     let q = client.query(
