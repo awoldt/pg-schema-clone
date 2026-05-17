@@ -35,6 +35,44 @@ enum ColumnDataType {
     Array(Box<ColumnDataType>), // this can represent all array types
 }
 
+impl ColumnDataType {
+    fn to_sql(&self) -> String {
+        // this function will take the enum vairiant and now return the correct postgres sql string
+        match self {
+            ColumnDataType::SmallInt => "SMALLINT".to_string(),
+            ColumnDataType::Integer => "INTEGER".to_string(),
+            ColumnDataType::BigInteger => "BIGINT".to_string(),
+            ColumnDataType::Decimal => "NUMERIC".to_string(),
+            ColumnDataType::Text => "TEXT".to_string(),
+            ColumnDataType::CharacterVarying => "VARCHAR".to_string(),
+            ColumnDataType::Character => "CHAR".to_string(),
+            ColumnDataType::Boolean => "BOOLEAN".to_string(),
+            ColumnDataType::Date => "DATE".to_string(),
+            ColumnDataType::Time => "TIME".to_string(),
+            ColumnDataType::TimeWithTZ => "TIME WITH TIME ZONE".to_string(),
+            ColumnDataType::Timestamp => "TIMESTAMP".to_string(),
+            ColumnDataType::Interval => "INTERVAL".to_string(),
+            ColumnDataType::Json => "JSON".to_string(),
+            ColumnDataType::JsonB => "JSONB".to_string(),
+            ColumnDataType::UUID => "UUID".to_string(),
+            ColumnDataType::Bytea => "BYTEA".to_string(),
+            ColumnDataType::Inet => "INET".to_string(),
+            ColumnDataType::Cidr => "CIDR".to_string(),
+            ColumnDataType::Macaddr => "MACADDR".to_string(),
+            ColumnDataType::TsVector => "TSVECTOR".to_string(),
+            ColumnDataType::TsQuery => "TSQUERY".to_string(),
+            ColumnDataType::Point => "POINT".to_string(),
+            ColumnDataType::Line => "LINE".to_string(),
+            ColumnDataType::Polygon => "POLYGON".to_string(),
+            ColumnDataType::Circle => "CIRCLE".to_string(),
+
+            ColumnDataType::Array(inner_type) => {
+                format!("{}[]", inner_type.to_sql())
+            }
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct UserInput {
@@ -89,7 +127,13 @@ struct DbConfig {
 struct Column {
     name: String,
     data_type: ColumnDataType,
-    is_nullable: bool
+    is_nullable: bool,
+    is_primary_key: bool,
+}
+
+struct Table {
+    name: String,
+    columns: Vec<Column>,
 }
 
 fn main() {
@@ -136,6 +180,14 @@ fn main() {
             return;
         }
     };
+
+    for t in tables_result {
+        let s = generate_create_table_query(t);
+        println!("{}", s)
+    }
+
+
+
 }
 
 fn build_postgres_conn_string(config: DbConfig) -> String {
@@ -152,33 +204,52 @@ fn build_postgres_conn_string(config: DbConfig) -> String {
     }
 }
 
-fn get_tables_structure(
-    client: &mut Client,
-    schema: &str,
-) -> Result<HashMap<String, Vec<Column>>, Box<dyn Error>> {
+fn get_tables_structure(client: &mut Client, schema: &str) -> Result<Vec<Table>, Box<dyn Error>> {
     let results = client.query(
         "SELECT
             c.table_name,
             c.column_name,
-            c.is_nullable,
+
+            CASE
+                WHEN c.is_nullable = 'YES' THEN TRUE
+                ELSE FALSE
+            END AS is_nullable,
+
             c.udt_name,
             c.character_maximum_length,
-            c.column_default
+            c.column_default,
+
+            CASE
+                WHEN tc.constraint_type = 'PRIMARY KEY' THEN TRUE
+                ELSE FALSE
+            END AS is_primary_key
+
         FROM information_schema.columns c
+
+        LEFT JOIN information_schema.key_column_usage kcu
+            ON c.table_name = kcu.table_name
+            AND c.column_name = kcu.column_name
+            AND c.table_schema = kcu.table_schema
+
+        LEFT JOIN information_schema.table_constraints tc
+            ON kcu.constraint_name = tc.constraint_name
+            AND kcu.table_schema = tc.table_schema
+
         WHERE c.table_schema = $1
+
         ORDER BY c.table_name, c.ordinal_position;",
         &[&schema],
     )?;
 
     let mut tables: HashMap<String, Vec<Column>> = HashMap::<String, Vec<Column>>::new(); // Vec<table, all columns>
-
     for row in results {
         let table_name: &str = row.get("table_name");
         let col_name: &str = row.get("column_name");
-        let is_nullable: &str = row.get("is_nullable");
+        let is_nullable: bool = row.get("is_nullable");
         let udt_name: &str = row.get("udt_name"); // udt stands for "user defined type"... the internal name postgres uses for a column type
         let character_max_length: Option<i32> = row.get("character_maximum_length");
         let column_default: Option<&str> = row.get("column_default");
+        let is_primary_key: bool = row.get("is_primary_key");
 
         let column_data_type = return_column_data_type(udt_name)?;
 
@@ -189,11 +260,43 @@ fn get_tables_structure(
             .push(Column {
                 name: String::from(col_name),
                 data_type: column_data_type,
-                is_nullable: if is_nullable == "YES" {true} else {false}
+                is_nullable,
+                is_primary_key,
             });
     }
 
-    Ok(tables)
+    let mut answer: Vec<Table> = vec![];
+    for (k, v) in tables {
+        answer.push(Table {
+            name: k,
+            columns: v,
+        });
+    }
+
+    Ok(answer)
+}
+
+fn generate_create_table_query(table: Table) -> String {
+    let mut cols: Vec<String> = vec![];
+    // create each columns sql definitions
+    for col in table.columns {
+        if col.is_primary_key {
+            cols.push(format!("{} {} PRIMARY KEY", col.name, col.data_type.to_sql()));
+        } else {
+            cols.push(format!("{} {}", col.name, col.data_type.to_sql()));
+        }
+    }
+    let col_sql_defs = cols.join(",");
+
+    format!(
+        "
+        CREATE TABLE {} (
+            {}
+        );
+    ",
+        table.name, 
+        col_sql_defs
+    )
 }
 
 fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String> {
@@ -203,47 +306,49 @@ fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String> {
             "_int2" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::SmallInt))),
             "_int4" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Integer))),
             "_int8" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::BigInteger))),
-    
+
             "_numeric" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Decimal))),
-    
+
             "_text" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Text))),
-    
-            "_varchar" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::CharacterVarying))),
+
+            "_varchar" => Ok(ColumnDataType::Array(Box::new(
+                ColumnDataType::CharacterVarying,
+            ))),
             "_bpchar" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Character))),
-    
+
             "_bool" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Boolean))),
-    
+
             "_date" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Date))),
-    
+
             "_time" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Time))),
             "_timetz" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::TimeWithTZ))),
-    
+
             "_timestamp" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Timestamp))),
-    
+
             "_interval" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Interval))),
-    
+
             "_json" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Json))),
             "_jsonb" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::JsonB))),
-    
+
             "_uuid" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::UUID))),
-    
+
             "_bytea" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Bytea))),
-    
+
             "_inet" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Inet))),
             "_cidr" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Cidr))),
             "_macaddr" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Macaddr))),
-    
+
             "_tsvector" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::TsVector))),
             "_tsquery" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::TsQuery))),
-    
+
             "_point" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Point))),
             "_line" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Line))),
             "_polygon" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Polygon))),
             "_circle" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Circle))),
-    
+
             _ => Err(format!("unknown postgres array type: {}", raw_type)),
         };
-    } 
+    }
 
     match raw_type {
         "int2" => Ok(ColumnDataType::SmallInt),
@@ -287,6 +392,6 @@ fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String> {
         "polygon" => Ok(ColumnDataType::Polygon),
         "circle" => Ok(ColumnDataType::Circle),
 
-        _ => Err(format!("invalid column type {}", raw_type))
+        _ => Err(format!("invalid column type {}", raw_type)),
     }
 }
