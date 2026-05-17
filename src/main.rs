@@ -99,6 +99,9 @@ struct UserInput {
     #[arg(long)]
     source_requires_tls: bool,
 
+    #[arg(long, default_value = "public")]
+    source_schema: String,
+
     // -- target db configs
     #[arg(long, required = true)]
     target_host: String,
@@ -117,6 +120,9 @@ struct UserInput {
 
     #[arg(long)]
     target_requires_tls: bool,
+
+    #[arg(long, default_value = "public")]
+    target_schema: String,
 }
 
 struct DbConfig {
@@ -126,6 +132,7 @@ struct DbConfig {
     port: i32,
     database: String,
     require_tls: bool,
+    schema: String,
 }
 
 struct Column {
@@ -150,8 +157,9 @@ fn main() {
         port: args.source_port,
         database: args.source_database,
         require_tls: args.source_requires_tls,
+        schema: args.source_schema,
     };
-    let source_conn_string: String = build_postgres_conn_string(source_db_config);
+    let source_conn_string: String = build_postgres_conn_string(&source_db_config);
 
     let target_db_config: DbConfig = DbConfig {
         host: args.target_host,
@@ -160,8 +168,9 @@ fn main() {
         port: args.target_port,
         database: args.target_database,
         require_tls: args.target_requires_tls,
+        schema: args.target_schema,
     };
-    let target_conn_string: String = build_postgres_conn_string(target_db_config);
+    let target_conn_string: String = build_postgres_conn_string(&target_db_config);
 
     let tls_connector = match TlsConnector::builder().build() {
         Ok(v) => v,
@@ -215,13 +224,14 @@ fn main() {
     // first check to see if the target db already has tables
     // in the specified schema
     // if so, the user must confirm to continue (will delete all those tables)
-    let num_of_target_tables = match target_db_has_tables(&mut target_transaction, "public") {
-        Ok(x) => x,
-        Err(e) => {
-            println!("ERROR: {:#?}", e);
-            return;
-        }
-    };
+    let num_of_target_tables =
+        match target_db_has_tables(&mut target_transaction, &target_db_config.schema) {
+            Ok(x) => x,
+            Err(e) => {
+                println!("ERROR: {:#?}", e);
+                return;
+            }
+        };
 
     if num_of_target_tables > 0 {
         loop {
@@ -242,7 +252,7 @@ fn main() {
                     return; // end program
                 }
                 "y" => {
-                    match remove_target_tables(&mut target_transaction, "public") {
+                    match remove_target_tables(&mut target_transaction, &target_db_config.schema) {
                         Ok(x) => {}
                         Err(e) => {
                             println!("ERROR: {:#?}", e);
@@ -257,7 +267,7 @@ fn main() {
     }
 
     // get all the source tables that will be cloned
-    let tables_result = match get_tables_structure(&mut source_client, "public") {
+    let tables_result = match get_tables_structure(&mut source_client, &source_db_config.schema) {
         Ok(x) => x,
         Err(e) => {
             println!("ERROR: {:#?}", e);
@@ -331,7 +341,7 @@ fn remove_target_tables(
     Ok(())
 }
 
-fn build_postgres_conn_string(config: DbConfig) -> String {
+fn build_postgres_conn_string(config: &DbConfig) -> String {
     if config.require_tls {
         format!(
             "postgres://{}:{}@{}:{}/{}?sslmode=require",
