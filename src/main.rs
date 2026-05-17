@@ -414,26 +414,15 @@ fn generate_create_table_query(table: Table) -> String {
     let mut cols: Vec<String> = vec![];
     // create each columns sql definitions
     for col in table.columns {
-        if col.is_primary_key {
-            cols.push(format!(
-                "{} {} PRIMARY KEY",
-                col.name,
-                col.data_type.to_sql()
-            ));
-        } else {
-            cols.push(format!("{} {}", col.name, col.data_type.to_sql()));
-        }
+        let mut col_str = format!("{} {} ", col.name.trim(), col.data_type.to_sql().trim()); // "is_verified BOOLEAN"
+        if !col.is_nullable {col_str.push_str("NOT NULL ")} // "is_verified BOOLEAN NOT NULL"
+        if col.is_primary_key {col_str.push_str("PRIMARY KEY")} // "is_verified BOOLEAN NOT NULL PRIMARY KEY"
+
+        cols.push(col_str);
     }
     let col_sql_defs = cols.join(",");
 
-    format!(
-        "
-        CREATE TABLE {} (
-            {}
-        );
-    ",
-        table.name, col_sql_defs
-    )
+    format!("CREATE TABLE {} ({});",table.name, col_sql_defs)
 }
 
 fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String> {
