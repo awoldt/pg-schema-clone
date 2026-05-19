@@ -3,6 +3,13 @@ pub struct Column {
     pub data_type: ColumnDataType,
     pub is_nullable: bool,
     pub is_primary_key: bool,
+    pub foreign_key_details: Option<ForeignKey> 
+}
+
+pub struct ForeignKey {
+    pub name: String,
+    pub references_table: String, // the table the fk points to
+    pub references_column: String // the column the fk points to (part of the table it points to)
 }
 
 pub enum ColumnDataType {
