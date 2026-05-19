@@ -10,8 +10,7 @@
   --target-username <TARGET_USERNAME> \
   --target-password <TARGET_PASSWORD> \
   --target-port <TARGET_PORT> \
-  --target-database <TARGET_DATABASE> \
-  --target-requires-tls
+  --target-database <TARGET_DATABASE>
 ```
 
 ## Linux Requirements

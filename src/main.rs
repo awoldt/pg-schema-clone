@@ -1,11 +1,7 @@
 mod db;
-mod models;
 
 use clap::Parser;
-use db::{
-    DbConfig, generate_create_table_query, get_tables_structure, has_tables, insert_foreign_keys,
-    remove_target_tables,
-};
+use db::{DbConfig, has_tables, insert_foreign_keys, remove_target_tables};
 use postgres::Client;
 use std::io::{self, Write};
 use std::time::Instant;
@@ -139,7 +135,7 @@ fn main() {
                 }
                 "y" => {
                     match remove_target_tables(&mut target_transaction, &target_db_config.schema) {
-                        Ok(x) => {}
+                        Ok(_) => {}
                         Err(e) => {
                             println!("ERROR: {:#?}", e);
                             return;
@@ -161,7 +157,7 @@ fn main() {
         source_db_config,
         &mut target_transaction,
     ) {
-        Ok(x) => {x}
+        Ok(x) => x,
         Err(e) => {
             println!("ERROR: {:#?}", e);
             return;
