@@ -3,12 +3,14 @@ mod models;
 
 use clap::Parser;
 use db::{
-    DbConfig, generate_create_table_query, get_tables_structure, has_tables, remove_target_tables, insert_foreign_keys
+    DbConfig, generate_create_table_query, get_tables_structure, has_tables, insert_foreign_keys,
+    remove_target_tables,
 };
 use postgres::Client;
 use std::io::{self, Write};
 use std::time::Instant;
 
+use crate::db::insert_tables;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -150,32 +152,21 @@ fn main() {
         }
     }
 
-    let startTime = Instant::now();
+    let start_time = Instant::now();
 
-    // get all the source tables that will be cloned
-    let tables_result = match get_tables_structure(&mut source_client, &source_db_config.schema) {
-        Ok(x) => x,
+    // generate the sql query to create tall tables from source db
+    // then acutally insert all into the target db
+    let tables_result = match insert_tables(
+        &mut source_client,
+        source_db_config,
+        &mut target_transaction,
+    ) {
+        Ok(x) => {x}
         Err(e) => {
             println!("ERROR: {:#?}", e);
             return;
         }
     };
-
-    // generate the CREATE query for each table
-    let mut create_table_queries: Vec<String> = vec![];
-    for t in &tables_result {
-        create_table_queries.push(generate_create_table_query(&t));
-    }
-
-    for q in create_table_queries {
-        match target_transaction.execute(&q, &[]) {
-            Ok(_) => {}
-            Err(e) => {
-                println!("ERROR: {:#?}", e);
-                return;
-            }
-        }
-    }
 
     // once all the tables are created  generate the foreign keys
     // for each column that needs one..
@@ -197,5 +188,8 @@ fn main() {
         }
     }
 
-    println!("\n\n\n\n\n\nDONE OK!\nfinished in {:?}", startTime.elapsed());
+    println!(
+        "\n\n\n\n\n\nDONE OK!\nfinished in {:?}",
+        start_time.elapsed()
+    );
 }

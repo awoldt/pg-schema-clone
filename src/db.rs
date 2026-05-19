@@ -194,7 +194,6 @@ pub fn remove_target_tables(
     let query = format!(
         "
         DROP SCHEMA {} CASCADE;
-        
         CREATE SCHEMA {};
     ",
         schema, schema
@@ -226,7 +225,10 @@ pub fn has_tables(
     Ok(q.len() as i32)
 }
 
-pub fn insert_foreign_keys(tables: Vec<Table>, client: &mut Transaction<'_>) -> Result<(), Box<dyn Error>> {
+pub fn insert_foreign_keys(
+    tables: Vec<Table>,
+    client: &mut Transaction<'_>,
+) -> Result<(), Box<dyn Error>> {
     let mut queries: Vec<String> = vec![];
 
     for table in tables {
@@ -239,10 +241,7 @@ pub fn insert_foreign_keys(tables: Vec<Table>, client: &mut Transaction<'_>) -> 
                     FOREIGN KEY ({})
                     REFERENCES {};
                 ",
-                    table.name,
-                    x.name,
-                    x.references_column,
-                    x.references_table
+                    table.name, x.name, x.references_column, x.references_table
                 ))
             }
         }
@@ -253,6 +252,23 @@ pub fn insert_foreign_keys(tables: Vec<Table>, client: &mut Transaction<'_>) -> 
     }
 
     Ok(())
+}
+
+pub fn insert_tables(
+    source_client: &mut Client,
+    source_db_config: DbConfig,
+    target_client: &mut postgres::Transaction<'_>,
+) -> Result<Vec<Table>, Box<dyn Error>> {
+    // first get the entire schema table structure from the source database
+    let schema_result = get_tables_structure(source_client, &source_db_config.schema)?;
+
+    // generate the CREATE query for each table
+    // and exectute against the target database!
+    for t in &schema_result {
+        target_client.execute(&generate_create_table_query(&t), &[])?;
+    }
+
+    Ok(schema_result)
 }
 
 pub fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String> {
