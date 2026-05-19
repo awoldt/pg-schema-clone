@@ -1,6 +1,8 @@
 use crate::models::column::{Column, ColumnDataType};
 
-use postgres::{Client, Error as PostgresError};
+use native_tls::TlsConnector;
+use postgres::{Client, Error as PostgresError, NoTls};
+use postgres_native_tls::MakeTlsConnector;
 use std::{collections::HashMap, error::Error};
 
 pub struct Table {
@@ -19,7 +21,7 @@ pub struct DbConfig {
 }
 
 impl DbConfig {
-    pub fn build_postgres_conn_string(&self) -> String {
+    fn build_postgres_conn_string(&self) -> String {
         if self.require_tls {
             format!(
                 "postgres://{}:{}@{}:{}/{}?sslmode=require",
@@ -30,6 +32,18 @@ impl DbConfig {
                 "postgres://{}:{}@{}:{}/{}",
                 self.username, self.password, self.host, self.port, self.database
             )
+        }
+    }
+
+    pub fn create_client(&self) -> Result<Client, Box<dyn Error>> {
+        if self.require_tls {
+            let tls_connector = TlsConnector::builder().build()?;
+            let tls = MakeTlsConnector::new(tls_connector.clone());
+            let client = Client::connect(&self.build_postgres_conn_string(), tls)?;
+            Ok(client)
+        } else {
+            let client = Client::connect(&self.build_postgres_conn_string(), NoTls)?;
+            Ok(client)
         }
     }
 }

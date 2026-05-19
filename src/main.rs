@@ -9,7 +9,7 @@ use db::{
 use native_tls::TlsConnector;
 use postgres::{Client, Error as PostgresError, NoTls};
 use postgres_native_tls::MakeTlsConnector;
-use std::io::{self, Write};
+use std::{io::{self, Write}, time::Instant};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -71,7 +71,6 @@ fn main() {
         require_tls: args.source_requires_tls,
         schema: args.source_schema,
     };
-    let source_conn_string: String = source_db_config.build_postgres_conn_string();
 
     let target_db_config: DbConfig = DbConfig {
         host: args.target_host,
@@ -82,33 +81,8 @@ fn main() {
         require_tls: args.target_requires_tls,
         schema: args.target_schema,
     };
-    let target_conn_string: String = target_db_config.build_postgres_conn_string();
 
-    let tls_connector = match TlsConnector::builder().build() {
-        Ok(v) => v,
-        Err(_e) => {
-            println!("error while establishing a TLS connector");
-            return;
-        }
-    };
-
-    let source_client_result: Result<Client, PostgresError>;
-    if args.source_requires_tls {
-        let tls = MakeTlsConnector::new(tls_connector.clone());
-        source_client_result = Client::connect(&source_conn_string, tls);
-    } else {
-        source_client_result = Client::connect(&source_conn_string, NoTls);
-    }
-
-    let target_client_result: Result<Client, PostgresError>;
-    if args.target_requires_tls {
-        let tls = MakeTlsConnector::new(tls_connector.clone());
-        target_client_result = Client::connect(&target_conn_string, tls);
-    } else {
-        target_client_result = Client::connect(&target_conn_string, NoTls);
-    }
-
-    let mut source_client: Client = match source_client_result {
+    let mut source_client: Client = match source_db_config.create_client() {
         Ok(client) => client,
         Err(e) => {
             println!("ERROR: {:#?}", e);
@@ -116,7 +90,7 @@ fn main() {
         }
     };
 
-    let mut target_client: Client = match target_client_result {
+    let mut target_client: Client = match target_db_config.create_client() {
         Ok(client) => client,
         Err(e) => {
             println!("ERROR: {:#?}", e);
@@ -178,6 +152,8 @@ fn main() {
         }
     }
 
+    let startTime = Instant::now();
+
     // get all the source tables that will be cloned
     let tables_result = match get_tables_structure(&mut source_client, &source_db_config.schema) {
         Ok(x) => x,
@@ -211,5 +187,5 @@ fn main() {
         }
     }
 
-    println!("\n\n\n\n\n\nDONE OK!");
+    println!("\n\n\n\n\n\nDONE OK!\nfinished in {:?}", startTime.elapsed());
 }
