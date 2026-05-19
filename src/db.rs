@@ -1,9 +1,9 @@
-use crate::models::column::{Column, ColumnDataType};
+use crate::models::column::{Column, ColumnDataType, ForeignKey};
 
-use postgres::{Client, Error as PostgresError, NoTls};
-use std::{collections::HashMap, error::Error};
-use postgres_native_tls::MakeTlsConnector;
 use native_tls::TlsConnector;
+use postgres::{Client, Error as PostgresError, NoTls, Transaction};
+use postgres_native_tls::MakeTlsConnector;
+use std::{collections::HashMap, error::Error};
 
 pub struct Table {
     pub name: String,
@@ -37,12 +37,12 @@ impl DbConfig {
 
     pub fn create_client(&self) -> Result<Client, Box<dyn Error>> {
         if self.require_tls {
-            let tls_connector =  TlsConnector::builder().build()?;
+            let tls_connector = TlsConnector::builder().build()?;
             let tls = MakeTlsConnector::new(tls_connector.clone());
             let client = Client::connect(&self.build_postgres_conn_string(), tls)?;
             Ok(client)
         } else {
-            let client=  Client::connect(&self.build_postgres_conn_string(), NoTls)?;
+            let client = Client::connect(&self.build_postgres_conn_string(), NoTls)?;
             Ok(client)
         }
     }
@@ -67,20 +67,44 @@ pub fn get_tables_structure(
             c.column_default,
 
             CASE
-                WHEN tc.constraint_type = 'PRIMARY KEY' THEN TRUE
+                WHEN pk_tc.constraint_type = 'PRIMARY KEY' THEN TRUE
                 ELSE FALSE
-            END AS is_primary_key
+            END AS is_primary_key,
+
+            CASE
+                WHEN fk_tc.constraint_type = 'FOREIGN KEY' THEN TRUE
+                ELSE FALSE
+            END AS is_foreign_key,
+
+            fk_tc.constraint_name AS foreign_key_name,
+            fk_ccu.table_name AS foreign_table_name,
+            fk_ccu.column_name AS foreign_column_name
 
         FROM information_schema.columns c
 
-        LEFT JOIN information_schema.key_column_usage kcu
-            ON c.table_name = kcu.table_name
-            AND c.column_name = kcu.column_name
-            AND c.table_schema = kcu.table_schema
+        LEFT JOIN information_schema.key_column_usage pk_kcu
+            ON c.table_name = pk_kcu.table_name
+            AND c.column_name = pk_kcu.column_name
+            AND c.table_schema = pk_kcu.table_schema
 
-        LEFT JOIN information_schema.table_constraints tc
-            ON kcu.constraint_name = tc.constraint_name
-            AND kcu.table_schema = tc.table_schema
+        LEFT JOIN information_schema.table_constraints pk_tc
+            ON pk_kcu.constraint_name = pk_tc.constraint_name
+            AND pk_kcu.table_schema = pk_tc.table_schema
+            AND pk_tc.constraint_type = 'PRIMARY KEY'
+
+        LEFT JOIN information_schema.key_column_usage fk_kcu
+            ON c.table_name = fk_kcu.table_name
+            AND c.column_name = fk_kcu.column_name
+            AND c.table_schema = fk_kcu.table_schema
+
+        LEFT JOIN information_schema.table_constraints fk_tc
+            ON fk_kcu.constraint_name = fk_tc.constraint_name
+            AND fk_kcu.table_schema = fk_tc.table_schema
+            AND fk_tc.constraint_type = 'FOREIGN KEY'
+
+        LEFT JOIN information_schema.constraint_column_usage fk_ccu
+            ON fk_tc.constraint_name = fk_ccu.constraint_name
+            AND fk_tc.table_schema = fk_ccu.table_schema
 
         WHERE c.table_schema = $1
 
@@ -97,6 +121,24 @@ pub fn get_tables_structure(
         let character_max_length: Option<i32> = row.get("character_maximum_length");
         let column_default: Option<&str> = row.get("column_default");
         let is_primary_key: bool = row.get("is_primary_key");
+        let is_foreign_key: bool = row.get("is_foreign_key");
+
+        // determine if this column is a foreign key that points to another table
+        let mut foreign_key_details: Option<ForeignKey> = None;
+        if is_foreign_key {
+            let name: Option<&str> = row.get("foreign_key_name");
+            let table: Option<&str> = row.get("foreign_table_name");
+            let column: Option<&str> = row.get("foreign_column_name");
+
+            foreign_key_details = match (name, table, column) {
+                (Some(name), Some(table), Some(column)) => Some(ForeignKey {
+                    name: name.to_string(),
+                    references_table: table.to_string(),
+                    references_column: column.to_string(),
+                }),
+                _ => None,
+            };
+        }
 
         let column_data_type = return_column_data_type(udt_name)?;
 
@@ -109,6 +151,7 @@ pub fn get_tables_structure(
                 data_type: column_data_type,
                 is_nullable,
                 is_primary_key,
+                foreign_key_details,
             });
     }
 
@@ -123,10 +166,11 @@ pub fn get_tables_structure(
     Ok(answer)
 }
 
-pub fn generate_create_table_query(table: Table) -> String {
+pub fn generate_create_table_query(table: &Table) -> String {
     let mut cols: Vec<String> = vec![];
     // create each columns sql definitions
-    for col in table.columns {
+
+    for col in &table.columns {
         let mut col_str = format!("{} {} ", col.name.trim(), col.data_type.to_sql().trim()); // "is_verified BOOLEAN"
         if !col.is_nullable {
             col_str.push_str("NOT NULL ")
@@ -161,11 +205,12 @@ pub fn remove_target_tables(
     Ok(())
 }
 
-pub fn target_db_has_tables(
+pub fn has_tables(
     client: &mut postgres::Transaction<'_>,
     schema: &str,
 ) -> Result<i32, PostgresError> {
-    // this will check to see if the target db has tables already in the specified schema
+    // this is mainly used to check if the target db already has tables
+    // returns the number of tables
 
     let q = client.query(
         "
@@ -179,6 +224,35 @@ pub fn target_db_has_tables(
     )?;
 
     Ok(q.len() as i32)
+}
+
+pub fn insert_foreign_keys(tables: Vec<Table>, client: &mut Transaction<'_>) -> Result<(), Box<dyn Error>> {
+    let mut queries: Vec<String> = vec![];
+
+    for table in tables {
+        for col in table.columns {
+            if let Some(x) = col.foreign_key_details {
+                queries.push(format!(
+                    "
+                    ALTER TABLE {}
+                    ADD CONSTRAINT {}
+                    FOREIGN KEY ({})
+                    REFERENCES {};
+                ",
+                    table.name,
+                    x.name,
+                    x.references_column,
+                    x.references_table
+                ))
+            }
+        }
+    }
+
+    for q in queries {
+        client.execute(&q, &[])?;
+    }
+
+    Ok(())
 }
 
 pub fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String> {

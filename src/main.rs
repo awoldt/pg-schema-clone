@@ -3,12 +3,9 @@ mod models;
 
 use clap::Parser;
 use db::{
-    DbConfig, generate_create_table_query, get_tables_structure, remove_target_tables,
-    target_db_has_tables,
+    DbConfig, generate_create_table_query, get_tables_structure, has_tables, remove_target_tables, insert_foreign_keys
 };
-use native_tls::TlsConnector;
-use postgres::{Client, Error as PostgresError, NoTls};
-use postgres_native_tls::MakeTlsConnector;
+use postgres::Client;
 use std::io::{self, Write};
 
 #[derive(Parser)]
@@ -110,14 +107,13 @@ fn main() {
     // first check to see if the target db already has tables
     // in the specified schema
     // if so, the user must confirm to continue (will delete all those tables)
-    let num_of_target_tables =
-        match target_db_has_tables(&mut target_transaction, &target_db_config.schema) {
-            Ok(x) => x,
-            Err(e) => {
-                println!("ERROR: {:#?}", e);
-                return;
-            }
-        };
+    let num_of_target_tables = match has_tables(&mut target_transaction, &target_db_config.schema) {
+        Ok(x) => x,
+        Err(e) => {
+            println!("ERROR: {:#?}", e);
+            return;
+        }
+    };
 
     if num_of_target_tables > 0 {
         loop {
@@ -163,8 +159,8 @@ fn main() {
 
     // generate the CREATE query for each table
     let mut create_table_queries: Vec<String> = vec![];
-    for t in tables_result {
-        create_table_queries.push(generate_create_table_query(t));
+    for t in &tables_result {
+        create_table_queries.push(generate_create_table_query(&t));
     }
 
     for q in create_table_queries {
@@ -176,6 +172,18 @@ fn main() {
             }
         }
     }
+
+    // once all the tables are created  generate the foreign keys
+    // for each column that needs one..
+    // do this AFTER the tables are created so that these tables actually exist
+    // and theres no errors
+    match insert_foreign_keys(tables_result, &mut target_transaction) {
+        Ok(_) => {}
+        Err(e) => {
+            println!("ERROR: {:#?}", e);
+            return;
+        }
+    };
 
     match target_transaction.commit() {
         Ok(_) => {}
