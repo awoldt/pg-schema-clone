@@ -343,6 +343,7 @@ pub fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String>
 
         "time" => Ok(ColumnDataType::Time),
         "timetz" => Ok(ColumnDataType::TimeWithTZ),
+        "timestamptz" => Ok(ColumnDataType::TimeWithTZ),
 
         "timestamp" => Ok(ColumnDataType::Timestamp),
 
