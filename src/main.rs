@@ -1,12 +1,10 @@
 mod db;
 
 use clap::Parser;
-use db::{DbConfig, has_tables, insert_foreign_keys, remove_target_tables};
+use db::{DbConfig, create_target_schema, has_tables, remove_target_tables};
 use postgres::Client;
 use std::io::{self, Write};
 use std::time::Instant;
-
-use crate::db::insert_tables;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -150,28 +148,16 @@ fn main() {
 
     let start_time = Instant::now();
 
-    // generate the sql query to create tall tables from source db
-    // then acutally insert all into the target db
-    let tables_result = match insert_tables(
+    // this is the single badass funciton that will do all the stuff we need
+    // to "clone" a source database to a target database
+    match create_target_schema(
         &mut source_client,
         source_db_config,
         &mut target_transaction,
     ) {
         Ok(x) => x,
         Err(e) => {
-            println!("ERROR: {:#?}", e);
-            return;
-        }
-    };
-
-    // once all the tables are created  generate the foreign keys
-    // for each column that needs one..
-    // do this AFTER the tables are created so that these tables actually exist
-    // and theres no errors
-    match insert_foreign_keys(tables_result, &mut target_transaction) {
-        Ok(_) => {}
-        Err(e) => {
-            println!("ERROR: {:#?}", e);
+            println!("{:?}", e);
             return;
         }
     };

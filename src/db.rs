@@ -3,6 +3,17 @@ use postgres::{Client, Error as PostgresError, NoTls, Transaction};
 use postgres_native_tls::MakeTlsConnector;
 use std::{collections::HashMap, error::Error};
 
+// this contains all the info we need about the source db
+// that needs to be applied to the target db
+pub struct DbStructureResult {
+    tables: Vec<Table>,
+    extensions: Vec<DbExtension>,
+}
+
+pub struct DbExtension {
+    name: String,
+}
+
 pub struct Table {
     pub name: String,
     columns: Vec<Column>,
@@ -65,29 +76,28 @@ pub enum ColumnDataType {
     Integer,
     BigInteger,
     Decimal,
+
     Text,
     CharacterVarying,
     Character,
+
     Boolean,
+
     Date,
     Time,
     TimeWithTZ,
     Timestamp,
     Interval,
+
     Json,
     JsonB,
     UUID,
+
     Bytea,
-    Inet,
-    Cidr,
-    Macaddr,
-    TsVector,
-    TsQuery,
-    Point,
-    Line,
-    Polygon,
-    Circle,
-    Array(Box<ColumnDataType>), // this can represent all array types
+
+    Array(Box<ColumnDataType>),
+
+    Custom(String), // IMPORTANT - this is basically any column type that is not part of default postgres
 }
 
 impl ColumnDataType {
@@ -111,28 +121,19 @@ impl ColumnDataType {
             ColumnDataType::JsonB => "JSONB".to_string(),
             ColumnDataType::UUID => "UUID".to_string(),
             ColumnDataType::Bytea => "BYTEA".to_string(),
-            ColumnDataType::Inet => "INET".to_string(),
-            ColumnDataType::Cidr => "CIDR".to_string(),
-            ColumnDataType::Macaddr => "MACADDR".to_string(),
-            ColumnDataType::TsVector => "TSVECTOR".to_string(),
-            ColumnDataType::TsQuery => "TSQUERY".to_string(),
-            ColumnDataType::Point => "POINT".to_string(),
-            ColumnDataType::Line => "LINE".to_string(),
-            ColumnDataType::Polygon => "POLYGON".to_string(),
-            ColumnDataType::Circle => "CIRCLE".to_string(),
-
             ColumnDataType::Array(inner_type) => {
                 format!("{}[]", inner_type.to_sql())
             }
+            ColumnDataType::Custom(raw_type) => raw_type.to_string(),
         }
     }
 }
 
-pub fn get_tables_structure(
+pub fn get_db_structure(
     client: &mut Client,
     schema: &str,
-) -> Result<Vec<Table>, Box<dyn Error>> {
-    let results = client.query(
+) -> Result<DbStructureResult, Box<dyn Error>> {
+    let table_structure_results = client.query(
         "SELECT
             c.table_name,
             c.column_name,
@@ -192,8 +193,9 @@ pub fn get_tables_structure(
         &[&schema],
     )?;
 
-    let mut tables: HashMap<String, Vec<Column>> = HashMap::<String, Vec<Column>>::new(); // Vec<table, all columns>
-    for row in results {
+    let mut tables_and_columns: HashMap<String, Vec<Column>> =
+        HashMap::<String, Vec<Column>>::new(); // Vec<table, all columns>
+    for row in table_structure_results {
         let table_name: &str = row.get("table_name");
         let col_name: &str = row.get("column_name");
         let is_nullable: bool = row.get("is_nullable");
@@ -223,7 +225,7 @@ pub fn get_tables_structure(
         let column_data_type = return_column_data_type(udt_name)?;
 
         // now construct the hashmap of tables
-        tables
+        tables_and_columns
             .entry(String::from(table_name))
             .or_insert(vec![])
             .push(Column {
@@ -235,15 +237,40 @@ pub fn get_tables_structure(
             });
     }
 
-    let mut answer: Vec<Table> = vec![];
-    for (k, v) in tables {
-        answer.push(Table {
+    let mut tables: Vec<Table> = vec![];
+    for (k, v) in tables_and_columns {
+        tables.push(Table {
             name: k,
             columns: v,
         });
     }
 
-    Ok(answer)
+    // we need to grab all the extentions a database has also
+    // to apply to the target database
+    let extension_reults = client.query(
+        "
+    SELECT
+    extname AS extension_name,
+    extnamespace::regnamespace::text AS extension_schema
+    FROM pg_extension
+    WHERE extnamespace::regnamespace::text = $1
+    ORDER BY extname;
+",
+        &[&schema],
+    )?;
+
+    let mut db_extensions: Vec<DbExtension> = vec![];
+    for extension in extension_reults {
+        let extension_name: &str = extension.get("extension_name");
+        db_extensions.push(DbExtension {
+            name: extension_name.to_string(),
+        });
+    }
+
+    Ok(DbStructureResult {
+        tables: tables,
+        extensions: db_extensions,
+    })
 }
 
 pub fn generate_create_table_query(table: &Table) -> String {
@@ -305,16 +332,45 @@ pub fn has_tables(
     Ok(q.len() as i32)
 }
 
-pub fn insert_foreign_keys(
-    tables: Vec<Table>,
-    client: &mut Transaction<'_>,
+// this function will apply all the necessary extenstions, tables, and columns
+// from the source database to the target database
+pub fn create_target_schema(
+    source_client: &mut Client,
+    source_db_config: DbConfig,
+    target_client: &mut postgres::Transaction<'_>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut queries: Vec<String> = vec![];
+    // first get the entire schema table structure from the source database
+    let db_structure = get_db_structure(source_client, &source_db_config.schema)?;
 
-    for table in tables {
-        for col in table.columns {
-            if let Some(x) = col.foreign_key_details {
-                queries.push(format!(
+    // add the extensions to the db first before adding all the
+    // tables and columns
+    for ext in &db_structure.extensions {
+        match target_client.execute(
+            &format!("CREATE EXTENSION IF NOT EXISTS {};", ext.name),
+            &[],
+        ) {
+            Ok(_) => {}
+            Err(_) => {
+                println!(
+                    "\nYou must install the {} extension on the target server before running.",
+                    ext.name
+                )
+            }
+        }
+    }
+
+    // generate the CREATE query for each table
+    // and exectute against the target database!
+    for t in &db_structure.tables {
+        target_client.execute(&generate_create_table_query(&t), &[])?;
+    }
+
+    // once all the tables are created and ready, we need to add foreign keys
+    let mut fk_queries: Vec<String> = vec![];
+    for table in &db_structure.tables {
+        for col in &table.columns {
+            if let Some(x) = &col.foreign_key_details {
+                fk_queries.push(format!(
                     "
                     ALTER TABLE {}
                     ADD CONSTRAINT {}
@@ -327,28 +383,11 @@ pub fn insert_foreign_keys(
         }
     }
 
-    for q in queries {
-        client.execute(&q, &[])?;
+    for q in &fk_queries {
+        target_client.execute(q, &[])?;
     }
 
     Ok(())
-}
-
-pub fn insert_tables(
-    source_client: &mut Client,
-    source_db_config: DbConfig,
-    target_client: &mut postgres::Transaction<'_>,
-) -> Result<Vec<Table>, Box<dyn Error>> {
-    // first get the entire schema table structure from the source database
-    let schema_result = get_tables_structure(source_client, &source_db_config.schema)?;
-
-    // generate the CREATE query for each table
-    // and exectute against the target database!
-    for t in &schema_result {
-        target_client.execute(&generate_create_table_query(&t), &[])?;
-    }
-
-    Ok(schema_result)
 }
 
 pub fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String> {
@@ -388,19 +427,6 @@ pub fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String>
             "_uuid" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::UUID))),
 
             "_bytea" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Bytea))),
-
-            "_inet" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Inet))),
-            "_cidr" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Cidr))),
-            "_macaddr" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Macaddr))),
-
-            "_tsvector" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::TsVector))),
-            "_tsquery" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::TsQuery))),
-
-            "_point" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Point))),
-            "_line" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Line))),
-            "_polygon" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Polygon))),
-            "_circle" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Circle))),
-
             _ => Err(format!("unknown postgres array type: {}", raw_type)),
         };
     }
@@ -436,18 +462,6 @@ pub fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String>
 
         "bytea" => Ok(ColumnDataType::Bytea),
 
-        "inet" => Ok(ColumnDataType::Inet),
-        "cidr" => Ok(ColumnDataType::Cidr),
-        "macaddr" => Ok(ColumnDataType::Macaddr),
-
-        "tsvector" => Ok(ColumnDataType::TsVector),
-        "tsquery" => Ok(ColumnDataType::TsQuery),
-
-        "point" => Ok(ColumnDataType::Point),
-        "line" => Ok(ColumnDataType::Line),
-        "polygon" => Ok(ColumnDataType::Polygon),
-        "circle" => Ok(ColumnDataType::Circle),
-
-        _ => Err(format!("invalid column type {}", raw_type)),
+        _ => Ok(ColumnDataType::Custom((raw_type.to_string()))), // DEFAULT FALLS BACK TO CUSTOM COLUMN TYPE
     }
 }
