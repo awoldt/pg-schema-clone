@@ -1,36 +1,40 @@
 use native_tls::TlsConnector;
 use postgres::{Client, Error as PostgresError, NoTls, Transaction};
 use postgres_native_tls::MakeTlsConnector;
-use std::{collections::HashMap, error::Error};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+};
 
 // this contains all the info we need about the source db
 // that needs to be applied to the target db
 pub struct DbStructureResult {
     tables: Vec<Table>,
-    extensions: Vec<DbExtension>,
-}
-
-pub struct DbExtension {
-    name: String,
+    extensions: Vec<String>,
 }
 
 pub struct Table {
     pub name: String,
     columns: Vec<Column>,
+    primary_keys: Vec<PrimaryKey>,
+    foreign_keys: Vec<ForeignKey>,
 }
 
 struct Column {
     pub name: String,
     pub data_type: ColumnDataType,
     pub is_nullable: bool,
-    pub is_primary_key: bool,
-    pub foreign_key_details: Option<ForeignKey>,
 }
 
 struct ForeignKey {
     pub name: String,
     pub references_table: String,  // the table the fk points to
     pub references_column: String, // the column the fk points to (part of the table it points to)
+}
+
+struct PrimaryKey {
+    name: String,
+    column: String,
 }
 
 pub struct DbConfig {
@@ -133,143 +137,141 @@ pub fn get_db_structure(
     client: &mut Client,
     schema: &str,
 ) -> Result<DbStructureResult, Box<dyn Error>> {
-    let table_structure_results = client.query(
-        "SELECT
-            c.table_name,
-            c.column_name,
+    let mut tables: Vec<Table> = vec![];
+    let mut extensions: Vec<String> = vec![];
 
-            CASE
-                WHEN c.is_nullable = 'YES' THEN TRUE
-                ELSE FALSE
-            END AS is_nullable,
-
-            c.udt_name,
-            c.character_maximum_length,
-            c.column_default,
-
-            CASE
-                WHEN pk_tc.constraint_type = 'PRIMARY KEY' THEN TRUE
-                ELSE FALSE
-            END AS is_primary_key,
-
-            CASE
-                WHEN fk_tc.constraint_type = 'FOREIGN KEY' THEN TRUE
-                ELSE FALSE
-            END AS is_foreign_key,
-
-            fk_tc.constraint_name AS foreign_key_name,
-            fk_ccu.table_name AS foreign_table_name,
-            fk_ccu.column_name AS foreign_column_name
-
-        FROM information_schema.columns c
-
-        LEFT JOIN information_schema.key_column_usage pk_kcu
-            ON c.table_name = pk_kcu.table_name
-            AND c.column_name = pk_kcu.column_name
-            AND c.table_schema = pk_kcu.table_schema
-
-        LEFT JOIN information_schema.table_constraints pk_tc
-            ON pk_kcu.constraint_name = pk_tc.constraint_name
-            AND pk_kcu.table_schema = pk_tc.table_schema
-            AND pk_tc.constraint_type = 'PRIMARY KEY'
-
-        LEFT JOIN information_schema.key_column_usage fk_kcu
-            ON c.table_name = fk_kcu.table_name
-            AND c.column_name = fk_kcu.column_name
-            AND c.table_schema = fk_kcu.table_schema
-
-        LEFT JOIN information_schema.table_constraints fk_tc
-            ON fk_kcu.constraint_name = fk_tc.constraint_name
-            AND fk_kcu.table_schema = fk_tc.table_schema
-            AND fk_tc.constraint_type = 'FOREIGN KEY'
-
-        LEFT JOIN information_schema.constraint_column_usage fk_ccu
-            ON fk_tc.constraint_name = fk_ccu.constraint_name
-            AND fk_tc.table_schema = fk_ccu.table_schema
-
-        WHERE c.table_schema = $1
-
-        ORDER BY c.table_name, c.ordinal_position;",
+    // get all the tables
+    let table_results = client.query(
+        "
+        SELECT
+            t.table_name
+        FROM information_schema.tables t
+        WHERE t.table_schema = $1
+        AND t.table_type = 'BASE TABLE'
+        ORDER BY t.table_name;
+    ",
         &[&schema],
     )?;
 
-    let mut tables_and_columns: HashMap<String, Vec<Column>> =
-        HashMap::<String, Vec<Column>>::new(); // Vec<table, all columns>
-    for row in table_structure_results {
-        let table_name: &str = row.get("table_name");
-        let col_name: &str = row.get("column_name");
-        let is_nullable: bool = row.get("is_nullable");
-        let udt_name: &str = row.get("udt_name"); // udt stands for "user defined type"... the internal name postgres uses for a column type
-        let character_max_length: Option<i32> = row.get("character_maximum_length");
-        let column_default: Option<&str> = row.get("column_default");
-        let is_primary_key: bool = row.get("is_primary_key");
-        let is_foreign_key: bool = row.get("is_foreign_key");
+    for t in &table_results {
+        let table_name: &str = t.get("table_name");
+        let mut exists: bool = false;
 
-        // determine if this column is a foreign key that points to another table
-        let mut foreign_key_details: Option<ForeignKey> = None;
-        if is_foreign_key {
-            let name: Option<&str> = row.get("foreign_key_name");
-            let table: Option<&str> = row.get("foreign_table_name");
-            let column: Option<&str> = row.get("foreign_column_name");
-
-            foreign_key_details = match (name, table, column) {
-                (Some(name), Some(table), Some(column)) => Some(ForeignKey {
-                    name: name.to_string(),
-                    references_table: table.to_string(),
-                    references_column: column.to_string(),
-                }),
-                _ => None,
-            };
+        // add table if not already exists
+        for t in &tables {
+            if t.name == table_name {
+                exists = true;
+                break;
+            }
         }
 
-        let column_data_type = return_column_data_type(udt_name)?;
-
-        // now construct the hashmap of tables
-        tables_and_columns
-            .entry(String::from(table_name))
-            .or_insert(vec![])
-            .push(Column {
-                name: String::from(col_name),
-                data_type: column_data_type,
-                is_nullable,
-                is_primary_key,
-                foreign_key_details,
-            });
+        if !exists {
+            tables.push(Table {
+                name: table_name.trim().to_string(),
+                columns: vec![],
+                primary_keys: vec![],
+                foreign_keys: vec![],
+            })
+        }
     }
 
-    let mut tables: Vec<Table> = vec![];
-    for (k, v) in tables_and_columns {
-        tables.push(Table {
-            name: k,
-            columns: v,
-        });
-    }
-
-    // we need to grab all the extentions a database has also
-    // to apply to the target database
-    let extension_reults = client.query(
+    // get all columns
+    let column_results = client.query(
         "
-    SELECT
-    extname AS extension_name,
-    extnamespace::regnamespace::text AS extension_schema
-    FROM pg_extension
-    WHERE extnamespace::regnamespace::text = $1
-    ORDER BY extname;
-",
+        SELECT
+        c.table_name,
+        c.column_name,
+
+        CASE
+            WHEN c.is_nullable = 'YES' THEN TRUE
+            ELSE FALSE
+        END AS is_nullable,
+
+        c.udt_name,
+        c.character_maximum_length,
+        c.column_default
+    FROM information_schema.columns c
+    WHERE c.table_schema = $1
+    ORDER BY c.table_name, c.ordinal_position;
+    ",
         &[&schema],
     )?;
 
-    let mut db_extensions: Vec<DbExtension> = vec![];
-    for extension in extension_reults {
-        let extension_name: &str = extension.get("extension_name");
-        db_extensions.push(DbExtension {
-            name: extension_name.to_string(),
-        });
+    for c in &column_results {
+        let table_name: &str = c.get("table_name");
+        let col_name: &str = c.get("column_name");
+        let is_nullable: bool = c.get("is_nullable");
+        let udt_name: &str = c.get("udt_name"); // udt stands for "user defined type"... the internal name postgres uses for a column type
+        let character_max_length: Option<i32> = c.get("character_maximum_length");
+        let column_default: Option<&str> = c.get("column_default");
+        let column_data_type = return_column_data_type(udt_name)?;
+
+        for t in &tables {
+            if t.name == table_name {
+
+                t.columns.push(Column {
+                    name: col_name.trim().to_string(),
+                    data_type: column_data_type,
+                    is_nullable: is_nullable,
+                });
+                break;
+            }
+        }
+    }
+
+    // get the extensions of database
+    let extension_results = client.query(
+        "
+        SELECT
+            e.extname AS extension_name
+        FROM pg_extension e
+        ORDER BY e.extname;
+    ",
+        &[],
+    )?;
+    for e in &extension_results {
+        let extension_name: &str = e.get("extension_name");
+        extensions.push(extension_name.trim().to_string());
+    }
+
+    // get the primary keys
+    let primary_key_results = client.query(
+        "
+        SELECT
+        kcu.table_name,
+        kcu.column_name,
+        tc.constraint_name AS primary_key_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+        AND tc.table_name = kcu.table_name
+    WHERE tc.table_schema = $1
+    AND tc.constraint_type = 'PRIMARY KEY'
+    ORDER BY kcu.table_name, kcu.ordinal_position;
+    ",
+        &[&schema],
+    )?;
+
+    for pk in &primary_key_results {
+        let table_name: &str = pk.get("table_name");
+        let pk_name: &str = pk.get("primary_key_name");
+        let pk_column: &str = pk.get("column_name");
+
+        for t in &tables {
+            if t.name == table_name {
+                t.primary_keys.push(PrimaryKey {
+                    name: pk_name.trim().to_string(),
+                    column: pk_column.trim().to_string(),
+                });
+                break;
+            }
+        }
     }
 
     Ok(DbStructureResult {
         tables: tables,
-        extensions: db_extensions,
+        extensions: extensions,
     })
 }
 
