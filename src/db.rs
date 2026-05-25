@@ -1,10 +1,7 @@
 use native_tls::TlsConnector;
-use postgres::{Client, Error as PostgresError, NoTls, Transaction};
+use postgres::{Client, Error as PostgresError, NoTls};
 use postgres_native_tls::MakeTlsConnector;
-use std::{
-    collections::{HashMap, HashSet},
-    error::Error,
-};
+use std::error::Error;
 
 // this contains all the info we need about the source db
 // that needs to be applied to the target db
@@ -206,9 +203,8 @@ pub fn get_db_structure(
         let column_default: Option<&str> = c.get("column_default");
         let column_data_type = return_column_data_type(udt_name)?;
 
-        for t in &tables {
+        for t in tables.iter_mut() {
             if t.name == table_name {
-
                 t.columns.push(Column {
                     name: col_name.trim().to_string(),
                     data_type: column_data_type,
@@ -258,7 +254,7 @@ pub fn get_db_structure(
         let pk_name: &str = pk.get("primary_key_name");
         let pk_column: &str = pk.get("column_name");
 
-        for t in &tables {
+        for t in tables.iter_mut() {
             if t.name == table_name {
                 t.primary_keys.push(PrimaryKey {
                     name: pk_name.trim().to_string(),
@@ -275,24 +271,27 @@ pub fn get_db_structure(
     })
 }
 
-pub fn generate_create_table_query(table: &Table) -> String {
-    let mut cols: Vec<String> = vec![];
-    // create each columns sql definitions
+pub fn generate_create_table_query(tables: &Vec<Table>) -> String {
+    let mut create_queries = vec![];
+    for t in tables {
+        let mut col_queries: Vec<String> = vec![];
+        for c in &t.columns {
+            col_queries.push(format!("{} {}", c.name, c.data_type.to_sql()))
+        }
 
-    for col in &table.columns {
-        let mut col_str = format!("{} {} ", col.name.trim(), col.data_type.to_sql().trim()); // "is_verified BOOLEAN"
-        if !col.is_nullable {
-            col_str.push_str("NOT NULL ")
-        } // "is_verified BOOLEAN NOT NULL"
-        if col.is_primary_key {
-            col_str.push_str("PRIMARY KEY")
-        } // "is_verified BOOLEAN NOT NULL PRIMARY KEY"
-
-        cols.push(col_str);
+        let q: String = format!(
+            "
+            CREATE TABLE {} (
+                {}
+            )
+        ",
+            t.name,
+            col_queries.join(",")
+        );
+        create_queries.push(q);
     }
-    let col_sql_defs = cols.join(",");
 
-    format!("CREATE TABLE {} ({});", table.name, col_sql_defs)
+    return create_queries.join(";\n");
 }
 
 pub fn remove_target_tables(
@@ -347,15 +346,12 @@ pub fn create_target_schema(
     // add the extensions to the db first before adding all the
     // tables and columns
     for ext in &db_structure.extensions {
-        match target_client.execute(
-            &format!("CREATE EXTENSION IF NOT EXISTS {};", ext.name),
-            &[],
-        ) {
+        match target_client.execute(&format!("CREATE EXTENSION IF NOT EXISTS {};", ext), &[]) {
             Ok(_) => {}
             Err(_) => {
                 println!(
                     "\nYou must install the {} extension on the target server before running.",
-                    ext.name
+                    ext
                 )
             }
         }
@@ -363,12 +359,11 @@ pub fn create_target_schema(
 
     // generate the CREATE query for each table
     // and exectute against the target database!
-    for t in &db_structure.tables {
-        target_client.execute(&generate_create_table_query(&t), &[])?;
-    }
+    target_client.execute(&generate_create_table_query(&db_structure.tables), &[])?;
 
-    // once all the tables are created and ready, we need to add foreign keys
+    // once all the tables are created and ready, we need to add primary and foreign keys
     let mut fk_queries: Vec<String> = vec![];
+
     for table in &db_structure.tables {
         for col in &table.columns {
             if let Some(x) = &col.foreign_key_details {
