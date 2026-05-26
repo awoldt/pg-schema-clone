@@ -360,7 +360,7 @@ pub fn create_target_schema(
 
     // generate the CREATE query for each table
     // and exectute against the target database!
-    target_client.execute(&generate_create_table_query(&db_structure.tables), &[])?;
+    target_client.batch_execute(&generate_create_table_query(&db_structure.tables))?;
 
     // once all the tables are created and ready, we need to add primary and foreign keys
     for table in &db_structure.tables {
