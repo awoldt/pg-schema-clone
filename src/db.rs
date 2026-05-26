@@ -1,7 +1,10 @@
+use clap::builder::Str;
 use native_tls::TlsConnector;
 use postgres::{Client, Error as PostgresError, NoTls};
 use postgres_native_tls::MakeTlsConnector;
 use std::error::Error;
+
+use crate::main;
 
 // this contains all the info we need about the source db
 // that needs to be applied to the target db
@@ -17,9 +20,15 @@ pub struct Table {
     foreign_keys: Vec<ForeignKey>,
 }
 
+struct ColumnType {
+    udt_name: String,         // raw postgres internal name type for column
+    postgres_type_kind: char, // what 'type' of column (base 'b', enum 'e', domain 'd', etc...)
+    enum_values: Option<Vec<String>>,
+}
+
 struct Column {
     pub name: String,
-    pub data_type: ColumnDataType,
+    pub data_type: ColumnType,
     pub is_nullable: bool,
 }
 
@@ -68,64 +77,6 @@ impl DbConfig {
         } else {
             let client = Client::connect(&self.build_postgres_conn_string(), NoTls)?;
             Ok(client)
-        }
-    }
-}
-
-pub enum ColumnDataType {
-    SmallInt,
-    Integer,
-    BigInteger,
-    Decimal,
-
-    Text,
-    CharacterVarying,
-    Character,
-
-    Boolean,
-
-    Date,
-    Time,
-    TimeWithTZ,
-    Timestamp,
-    Interval,
-
-    Json,
-    JsonB,
-    UUID,
-
-    Bytea,
-
-    Array(Box<ColumnDataType>),
-
-    Custom(String), // IMPORTANT - this is basically any column type that is not part of default postgres
-}
-
-impl ColumnDataType {
-    pub fn to_sql(&self) -> String {
-        // this function will take the enum vairiant and return the valid postgres sql string (udt string)
-        match self {
-            ColumnDataType::SmallInt => "SMALLINT".to_string(),
-            ColumnDataType::Integer => "INTEGER".to_string(),
-            ColumnDataType::BigInteger => "BIGINT".to_string(),
-            ColumnDataType::Decimal => "NUMERIC".to_string(),
-            ColumnDataType::Text => "TEXT".to_string(),
-            ColumnDataType::CharacterVarying => "VARCHAR".to_string(),
-            ColumnDataType::Character => "CHAR".to_string(),
-            ColumnDataType::Boolean => "BOOLEAN".to_string(),
-            ColumnDataType::Date => "DATE".to_string(),
-            ColumnDataType::Time => "TIME".to_string(),
-            ColumnDataType::TimeWithTZ => "TIME WITH TIME ZONE".to_string(),
-            ColumnDataType::Timestamp => "TIMESTAMP".to_string(),
-            ColumnDataType::Interval => "INTERVAL".to_string(),
-            ColumnDataType::Json => "JSON".to_string(),
-            ColumnDataType::JsonB => "JSONB".to_string(),
-            ColumnDataType::UUID => "UUID".to_string(),
-            ColumnDataType::Bytea => "BYTEA".to_string(),
-            ColumnDataType::Array(inner_type) => {
-                format!("{}[]", inner_type.to_sql())
-            }
-            ColumnDataType::Custom(raw_type) => raw_type.to_string(),
         }
     }
 }
@@ -186,9 +137,33 @@ pub fn get_db_structure(
 
         c.udt_name,
         c.character_maximum_length,
-        c.column_default
+        c.column_default,
+
+        t.typtype AS postgres_type_kind,
+
+        array_agg(e.enumlabel ORDER BY e.enumsortorder)
+            FILTER (WHERE e.enumlabel IS NOT NULL) AS enum_values
+
     FROM information_schema.columns c
+
+    LEFT JOIN pg_type t
+        ON t.typname = c.udt_name
+
+    LEFT JOIN pg_enum e
+        ON e.enumtypid = t.oid
+
     WHERE c.table_schema = $1
+
+    GROUP BY
+        c.table_name,
+        c.column_name,
+        c.is_nullable,
+        c.udt_name,
+        c.character_maximum_length,
+        c.column_default,
+        c.ordinal_position,
+        t.typtype
+
     ORDER BY c.table_name, c.ordinal_position;
     ",
         &[&schema],
@@ -201,13 +176,18 @@ pub fn get_db_structure(
         let udt_name: &str = c.get("udt_name"); // udt stands for "user defined type"... the internal name postgres uses for a column type
         let character_max_length: Option<i32> = c.get("character_maximum_length");
         let column_default: Option<&str> = c.get("column_default");
-        let column_data_type = return_column_data_type(udt_name)?;
+        let postgres_type_kind: i8 = c.get("postgres_type_kind");
+        let enum_values: Option<Vec<String>> = c.get("enum_values");
 
         for t in tables.iter_mut() {
             if t.name == table_name {
                 t.columns.push(Column {
                     name: col_name.trim().to_string(),
-                    data_type: column_data_type,
+                    data_type: ColumnType {
+                        udt_name: udt_name.trim().to_string(),
+                        postgres_type_kind: postgres_type_kind as u8 as char,
+                        enum_values: enum_values,
+                    },
                     is_nullable: is_nullable,
                 });
                 break;
@@ -276,7 +256,7 @@ pub fn generate_create_table_query(tables: &Vec<Table>) -> String {
     for t in tables {
         let mut col_queries: Vec<String> = vec![];
         for c in &t.columns {
-            col_queries.push(format!("{} {}", c.name, c.data_type.to_sql()))
+            col_queries.push(format!("{} {}", c.name, c.data_type.udt_name))
         }
 
         let q: String = format!(
@@ -290,6 +270,8 @@ pub fn generate_create_table_query(tables: &Vec<Table>) -> String {
         );
         create_queries.push(q);
     }
+
+    
 
     return create_queries.join(";\n");
 }
@@ -359,6 +341,39 @@ pub fn create_target_schema(
         }
     }
 
+    // we need to check columns for any enum types and create those
+    // before we attempt to create each table
+    for t in &db_structure.tables {
+        for c in &t.columns {
+            if c.data_type.postgres_type_kind == 'e' {
+                if let Some(enum_values) = &c.data_type.enum_values {
+                    let mut quoted_enum_values: Vec<String> = vec![]; // need to add quotes around each enum value
+                    for e in enum_values {
+                        quoted_enum_values.push(format!("'{}'", e));
+                    }
+
+                    match target_client.execute(
+                        &format!(
+                            "CREATE TYPE {} as ENUM ({})",
+                            c.data_type.udt_name,
+                            quoted_enum_values.join(", ")
+                        ),
+                        &[],
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!(
+                                "There was an error while creating the enum type '{}'\n{:?}",
+                                c.data_type.udt_name, e
+                            );
+                            return Err(Box::new(e));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // generate the CREATE query for each table
     // and exectute against the target database!
     target_client.batch_execute(&generate_create_table_query(&db_structure.tables))?;
@@ -408,80 +423,4 @@ pub fn create_target_schema(
     }
 
     Ok(())
-}
-
-pub fn return_column_data_type(raw_type: &str) -> Result<ColumnDataType, String> {
-    // this function will take in the raw "udt" string for postgres and translate it
-    // to a valid ColumnDataType
-
-    // arrays need to be handled special
-    if raw_type.starts_with("_") {
-        return match raw_type {
-            "_int2" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::SmallInt))),
-            "_int4" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Integer))),
-            "_int8" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::BigInteger))),
-
-            "_numeric" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Decimal))),
-
-            "_text" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Text))),
-
-            "_varchar" => Ok(ColumnDataType::Array(Box::new(
-                ColumnDataType::CharacterVarying,
-            ))),
-            "_bpchar" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Character))),
-
-            "_bool" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Boolean))),
-
-            "_date" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Date))),
-
-            "_time" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Time))),
-            "_timetz" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::TimeWithTZ))),
-
-            "_timestamp" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Timestamp))),
-
-            "_interval" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Interval))),
-
-            "_json" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Json))),
-            "_jsonb" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::JsonB))),
-
-            "_uuid" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::UUID))),
-
-            "_bytea" => Ok(ColumnDataType::Array(Box::new(ColumnDataType::Bytea))),
-            _ => Err(format!("unknown postgres array type: {}", raw_type)),
-        };
-    }
-
-    match raw_type {
-        "int2" => Ok(ColumnDataType::SmallInt),
-        "int4" => Ok(ColumnDataType::Integer),
-        "int8" => Ok(ColumnDataType::BigInteger),
-
-        "numeric" => Ok(ColumnDataType::Decimal),
-
-        "text" => Ok(ColumnDataType::Text),
-
-        "varchar" => Ok(ColumnDataType::CharacterVarying),
-        "bpchar" => Ok(ColumnDataType::Character),
-
-        "bool" => Ok(ColumnDataType::Boolean),
-
-        "date" => Ok(ColumnDataType::Date),
-
-        "time" => Ok(ColumnDataType::Time),
-        "timetz" => Ok(ColumnDataType::TimeWithTZ),
-        "timestamptz" => Ok(ColumnDataType::TimeWithTZ),
-
-        "timestamp" => Ok(ColumnDataType::Timestamp),
-
-        "interval" => Ok(ColumnDataType::Interval),
-
-        "json" => Ok(ColumnDataType::Json),
-        "jsonb" => Ok(ColumnDataType::JsonB),
-
-        "uuid" => Ok(ColumnDataType::UUID),
-
-        "bytea" => Ok(ColumnDataType::Bytea),
-
-        _ => Ok(ColumnDataType::Custom((raw_type.to_string()))), // DEFAULT FALLS BACK TO CUSTOM COLUMN TYPE
-    }
 }
