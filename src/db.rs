@@ -33,7 +33,8 @@ struct Column {
 }
 
 struct ForeignKey {
-    pub name: String,
+    pub contraint_name: String,
+    pub column_name: String,
     pub references_table: String,  // the table the fk points to
     pub references_column: String, // the column the fk points to (part of the table it points to)
 }
@@ -245,6 +246,56 @@ pub fn get_db_structure(
         }
     }
 
+    // get the foreign keys '
+    let foreign_key_results = client.query(
+        "
+       SELECT
+        kcu.constraint_name AS foreign_key_name,
+        kcu.table_name AS table_name,
+        kcu.column_name AS column_name,
+        ccu.table_name AS references_table,
+        ccu.column_name AS references_column
+    FROM information_schema.table_constraints tc
+
+    JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+
+    JOIN information_schema.constraint_column_usage ccu
+        ON tc.constraint_name = ccu.constraint_name
+        AND tc.table_schema = ccu.table_schema
+
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+    AND tc.table_schema = $1
+
+    ORDER BY
+        kcu.table_name,
+        kcu.constraint_name,
+        kcu.ordinal_position;
+    ",
+        &[&schema],
+    )?;
+
+    for fk in &foreign_key_results {
+        let table_name: &str = fk.get("table_name");
+        let fk_contraint_name: &str = fk.get("foreign_key_name");
+        let column_name: &str = fk.get("column_name");
+        let references_table: &str = fk.get("references_table");
+        let refernces_column: &str = fk.get("references_column");
+
+        for t in tables.iter_mut() {
+            if t.name == table_name {
+                t.foreign_keys.push(ForeignKey {
+                    contraint_name: fk_contraint_name.trim().to_string(),
+                    column_name: column_name.trim().to_string(),
+                    references_table: references_table.trim().to_string(),
+                    references_column: refernces_column.trim().to_string(),
+                });
+                break;
+            }
+        }
+    }
+
     Ok(DbStructureResult {
         tables: tables,
         extensions: extensions,
@@ -270,8 +321,6 @@ pub fn generate_create_table_query(tables: &Vec<Table>) -> String {
         );
         create_queries.push(q);
     }
-
-    
 
     return create_queries.join(";\n");
 }
@@ -413,9 +462,13 @@ pub fn create_target_schema(
             ALTER TABLE {}
             ADD CONSTRAINT {}
             FOREIGN KEY ({})
-            REFERENCES users({});
+            REFERENCES {}({});
         ",
-                    table.name, fk.name, fk.references_column, fk.references_table
+                    table.name,
+                    fk.contraint_name,
+                    fk.column_name,
+                    fk.references_table,
+                    fk.references_column
                 ),
                 &[],
             )?;
