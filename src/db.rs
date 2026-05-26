@@ -341,6 +341,7 @@ pub fn create_target_schema(
     target_client: &mut postgres::Transaction<'_>,
 ) -> Result<(), Box<dyn Error>> {
     // first get the entire schema table structure from the source database
+    // this will include all the important details needed for cloning a schema
     let db_structure = get_db_structure(source_client, &source_db_config.schema)?;
 
     // add the extensions to the db first before adding all the
@@ -362,26 +363,47 @@ pub fn create_target_schema(
     target_client.execute(&generate_create_table_query(&db_structure.tables), &[])?;
 
     // once all the tables are created and ready, we need to add primary and foreign keys
-    let mut fk_queries: Vec<String> = vec![];
-
     for table in &db_structure.tables {
-        for col in &table.columns {
-            if let Some(x) = &col.foreign_key_details {
-                fk_queries.push(format!(
-                    "
-                    ALTER TABLE {}
-                    ADD CONSTRAINT {}
-                    FOREIGN KEY ({})
-                    REFERENCES {};
-                ",
-                    table.name, x.name, x.references_column, x.references_table
-                ))
-            }
-        }
-    }
+        let primary_keys: &Vec<PrimaryKey> = &table.primary_keys;
+        let foreign_keys: &Vec<ForeignKey> = &table.foreign_keys;
 
-    for q in &fk_queries {
-        target_client.execute(q, &[])?;
+        // when adding primary keys we need to account for it being a
+        // composite primary key
+        let mut pk_columns: Vec<String> = vec![];
+        for pk in primary_keys {
+            pk_columns.push(pk.name.to_string());
+        }
+
+        // add the primary keys
+        target_client.execute(
+            &format!(
+                "
+            ALTER TABLE {}
+            ADD CONSTRAINT {}
+            PRIMARY KEY ({});
+        ",
+                table.name,
+                "pk",
+                pk_columns.join(", ")
+            ),
+            &[],
+        )?;
+
+        // add the foreign keys
+        for fk in foreign_keys {
+            target_client.execute(
+                &format!(
+                    "
+            ALTER TABLE {}
+            ADD CONSTRAINT {}
+            FOREIGN KEY ({})
+            REFERENCES users({});
+        ",
+                    table.name, fk.name, fk.references_column, fk.references_table
+                ),
+                &[],
+            )?;
+        }
     }
 
     Ok(())
