@@ -349,11 +349,12 @@ pub fn create_target_schema(
     for ext in &db_structure.extensions {
         match target_client.execute(&format!("CREATE EXTENSION IF NOT EXISTS {};", ext), &[]) {
             Ok(_) => {}
-            Err(_) => {
+            Err(e) => {
                 println!(
-                    "\nYou must install the {} extension on the target server before running.",
-                    ext
-                )
+                    "\nYou must install the {} extension on the target server before running.\n{:?}",
+                    ext, e
+                );
+                return Err(Box::new(e));
             }
         }
     }
