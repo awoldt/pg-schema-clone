@@ -1,10 +1,7 @@
-use clap::builder::Str;
 use native_tls::TlsConnector;
 use postgres::{Client, Error as PostgresError, NoTls};
 use postgres_native_tls::MakeTlsConnector;
-use std::error::Error;
-
-use crate::main;
+use std::{collections::HashMap, error::Error};
 
 // this contains all the info we need about the source db
 // that needs to be applied to the target db
@@ -33,15 +30,15 @@ struct Column {
 }
 
 struct ForeignKey {
-    pub contraint_name: String,
-    pub column_name: String,
-    pub references_table: String,  // the table the fk points to
-    pub references_column: String, // the column the fk points to (part of the table it points to)
+    pub constraint_name: String,
+    pub columns: Vec<String>,
+    pub references_table: String,        // the table the fk points to
+    pub references_columns: Vec<String>, // the columns the fk points to (these columns belong to the "references_table")
 }
 
 struct PrimaryKey {
-    name: String,
-    column: String,
+    contraint_name: String,
+    columns: Vec<String>,
 }
 
 pub struct DbConfig {
@@ -230,23 +227,31 @@ pub fn get_db_structure(
         &[&schema],
     )?;
 
+    let mut pk_details: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new(); // <table, <contraint_name, vec<columns>>>
     for pk in &primary_key_results {
         let table_name: &str = pk.get("table_name");
         let pk_name: &str = pk.get("primary_key_name");
-        let pk_column: &str = pk.get("column_name");
+        let column_name: &str = pk.get("column_name");
 
-        for t in tables.iter_mut() {
-            if t.name == table_name {
+        pk_details
+            .entry(table_name.to_string())
+            .or_insert(HashMap::new())
+            .entry(pk_name.to_string())
+            .or_insert(vec![])
+            .push(column_name.to_string());
+    }
+    for t in tables.iter_mut() {
+        if let Some(pk_details) = pk_details.get_mut(&t.name) {
+            for (pk_contraint, columns) in pk_details {
                 t.primary_keys.push(PrimaryKey {
-                    name: pk_name.trim().to_string(),
-                    column: pk_column.trim().to_string(),
+                    contraint_name: pk_contraint.to_string(),
+                    columns: columns.clone(),
                 });
-                break;
             }
         }
     }
 
-    // get the foreign keys '
+    // get the foreign keys
     let foreign_key_results = client.query(
         "
        SELECT
@@ -276,24 +281,30 @@ pub fn get_db_structure(
         &[&schema],
     )?;
 
+    let mut fk_details: HashMap<String, HashMap<String, ForeignKey>> = HashMap::new(); // <table, <contraint_name, vec<columns>>>
     for fk in &foreign_key_results {
         let table_name: &str = fk.get("table_name");
         let fk_contraint_name: &str = fk.get("foreign_key_name");
         let column_name: &str = fk.get("column_name");
         let references_table: &str = fk.get("references_table");
-        let refernces_column: &str = fk.get("references_column");
+        let references_column: &str = fk.get("references_column");
 
-        for t in tables.iter_mut() {
-            if t.name == table_name {
-                t.foreign_keys.push(ForeignKey {
-                    contraint_name: fk_contraint_name.trim().to_string(),
-                    column_name: column_name.trim().to_string(),
-                    references_table: references_table.trim().to_string(),
-                    references_column: refernces_column.trim().to_string(),
-                });
-                break;
-            }
-        }
+        fk_details
+            .entry(table_name.to_string())
+            .or_default()
+            .entry(fk_contraint_name.to_string())
+            .and_modify(|existing_fk| {
+                existing_fk.columns.push(column_name.to_string());
+                existing_fk
+                    .references_columns
+                    .push(references_column.to_string());
+            })
+            .or_insert(ForeignKey {
+                constraint_name: fk_contraint_name.to_string(),
+                columns: vec![column_name.to_string()],
+                references_table: references_table.to_string(),
+                references_columns: vec![references_column.to_string()],
+            });
     }
 
     Ok(DbStructureResult {
@@ -432,27 +443,21 @@ pub fn create_target_schema(
         let primary_keys: &Vec<PrimaryKey> = &table.primary_keys;
         let foreign_keys: &Vec<ForeignKey> = &table.foreign_keys;
 
-        // when adding primary keys we need to account for it being a
-        // composite primary key
-        let mut pk_columns: Vec<String> = vec![];
         for pk in primary_keys {
-            pk_columns.push(pk.name.to_string());
-        }
-
-        // add the primary keys
-        target_client.execute(
-            &format!(
-                "
+            target_client.execute(
+                &format!(
+                    "
             ALTER TABLE {}
             ADD CONSTRAINT {}
             PRIMARY KEY ({});
         ",
-                table.name,
-                "pk",
-                pk_columns.join(", ")
-            ),
-            &[],
-        )?;
+                    table.name,
+                    pk.contraint_name,
+                    pk.columns.join(", ")
+                ),
+                &[],
+            )?;
+        }
 
         // add the foreign keys
         for fk in foreign_keys {
@@ -465,10 +470,10 @@ pub fn create_target_schema(
             REFERENCES {}({});
         ",
                     table.name,
-                    fk.contraint_name,
-                    fk.column_name,
+                    fk.constraint_name,
+                    fk.columns.join(","),
                     fk.references_table,
-                    fk.references_column
+                    fk.references_columns.join(",")
                 ),
                 &[],
             )?;
