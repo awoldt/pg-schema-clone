@@ -29,6 +29,7 @@ struct Column {
     pub is_nullable: bool,
 }
 
+#[derive(Debug)]
 struct ForeignKey {
     pub constraint_name: String,
     pub columns: Vec<String>,
@@ -36,6 +37,7 @@ struct ForeignKey {
     pub references_columns: Vec<String>, // the columns the fk points to (these columns belong to the "references_table")
 }
 
+#[derive(Debug)]
 struct PrimaryKey {
     constraint_name: String,
     columns: Vec<String>,
@@ -451,9 +453,9 @@ pub fn create_target_schema(
     target_client.batch_execute(&generate_create_table_query(&db_structure.tables))?;
 
     // once all the tables are created and ready, we need to add primary and foreign keys
+    // ADD ALL PRIMARY KEYS FIRST
     for table in &db_structure.tables {
         let primary_keys: &Vec<PrimaryKey> = &table.primary_keys;
-        let foreign_keys: &Vec<ForeignKey> = &table.foreign_keys;
 
         for pk in primary_keys {
             target_client.execute(
@@ -470,6 +472,11 @@ pub fn create_target_schema(
                 &[],
             )?;
         }
+    }
+
+    // now add all the foreign keys
+    for table in &db_structure.tables {
+        let foreign_keys: &Vec<ForeignKey> = &table.foreign_keys;
 
         // add the foreign keys
         for fk in foreign_keys {
