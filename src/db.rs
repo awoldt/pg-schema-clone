@@ -37,7 +37,7 @@ struct ForeignKey {
 }
 
 struct PrimaryKey {
-    contraint_name: String,
+    constraint_name: String,
     columns: Vec<String>,
 }
 
@@ -244,7 +244,7 @@ pub fn get_db_structure(
         if let Some(pk_details) = pk_details.get_mut(&t.name) {
             for (pk_contraint, columns) in pk_details {
                 t.primary_keys.push(PrimaryKey {
-                    contraint_name: pk_contraint.to_string(),
+                    constraint_name: pk_contraint.to_string(),
                     columns: columns.clone(),
                 });
             }
@@ -305,6 +305,18 @@ pub fn get_db_structure(
                 references_table: references_table.to_string(),
                 references_columns: vec![references_column.to_string()],
             });
+    }
+    for t in tables.iter_mut() {
+        if let Some(fk_details) = fk_details.get_mut(&t.name) {
+            for (fk_constraint, fks) in fk_details {
+                t.foreign_keys.push(ForeignKey {
+                    constraint_name: fk_constraint.to_string(),
+                    columns: fks.columns.clone(),
+                    references_table: fks.references_table.clone(),
+                    references_columns: fks.references_columns.clone(),
+                });
+            }
+        }
     }
 
     Ok(DbStructureResult {
@@ -452,7 +464,7 @@ pub fn create_target_schema(
             PRIMARY KEY ({});
         ",
                     table.name,
-                    pk.contraint_name,
+                    pk.constraint_name,
                     pk.columns.join(", ")
                 ),
                 &[],
