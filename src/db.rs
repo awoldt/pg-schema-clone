@@ -55,6 +55,11 @@ pub struct DbConfig {
     pub schema: String,
 }
 
+pub struct CreatTargetSchemaResult {
+    pub tables_created: i32,
+    pub columns_created: i32,
+}
+
 impl DbConfig {
     fn build_postgres_conn_string(&self) -> String {
         if self.require_tls {
@@ -429,7 +434,7 @@ pub fn create_target_schema(
     source_client: &mut Client,
     source_db_config: DbConfig,
     target_client: &mut postgres::Transaction<'_>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<CreatTargetSchemaResult, Box<dyn Error>> {
     // first get the entire schema table structure from the source database
     // this will include all the important details needed for cloning a schema
     let db_structure = get_db_structure(source_client, &source_db_config.schema)?;
@@ -533,5 +538,14 @@ pub fn create_target_schema(
         }
     }
 
-    Ok(())
+    let mut num_of_columns = 0;
+    for t in &db_structure.tables {
+        for _c in &t.columns {
+            num_of_columns += 1;
+        }
+    }
+    Ok(CreatTargetSchemaResult {
+        tables_created: db_structure.tables.len() as i32,
+        columns_created: num_of_columns,
+    })
 }

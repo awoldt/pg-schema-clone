@@ -150,7 +150,7 @@ fn main() {
 
     // this is the single badass funciton that will do all the stuff we need
     // to "clone" a source database to a target database
-    match create_target_schema(
+    let final_result = match create_target_schema(
         &mut source_client,
         source_db_config,
         &mut target_transaction,
@@ -171,7 +171,18 @@ fn main() {
     }
 
     println!(
-        "\n\n\n\n\n\nDONE OK!\nfinished in {:?}",
+        "
+========================================
+ Database schema cloned successfully
+========================================
+
+Tables created: {}
+Columns created: {}
+Completed in: {:.2?}
+
+",
+        final_result.tables_created,
+        final_result.columns_created,
         start_time.elapsed()
     );
 }
