@@ -1,17 +1,17 @@
 use native_tls::TlsConnector;
-use postgres::{Client, Error as PostgresError, NoTls, error::Severity::Panic};
+use postgres::{Client, Error as PostgresError, NoTls};
 use postgres_native_tls::MakeTlsConnector;
 use std::{collections::HashMap, error::Error};
 
 // this contains all the info we need about the source db
 // that needs to be applied to the target db
-pub struct DbStructureResult {
+struct DbStructureResult {
     tables: Vec<Table>,
     extensions: Vec<String>,
 }
 
-pub struct Table {
-    pub name: String,
+struct Table {
+    name: String,
     columns: Vec<Column>,
     primary_keys: Vec<PrimaryKey>,
     foreign_keys: Vec<ForeignKey>,
@@ -25,18 +25,18 @@ struct ColumnType {
 }
 
 struct Column {
-    pub name: String,
-    pub data_type: ColumnType,
-    pub is_nullable: bool,
-    pub default_value: Option<String>,
+    name: String,
+    data_type: ColumnType,
+    is_nullable: bool,
+    default_value: Option<String>,
 }
 
 #[derive(Debug)]
 struct ForeignKey {
-    pub constraint_name: String,
-    pub columns: Vec<String>,
-    pub references_table: String,        // the table the fk points to
-    pub references_columns: Vec<String>, // the columns the fk points to (these columns belong to the "references_table")
+    constraint_name: String,
+    columns: Vec<String>,
+    references_table: String,        // the table the fk points to
+    references_columns: Vec<String>, // the columns the fk points to (these columns belong to the "references_table")
 }
 
 #[derive(Debug)]
@@ -88,7 +88,7 @@ impl DbConfig {
     }
 }
 
-pub fn get_db_structure(
+fn get_db_structure(
     client: &mut Client,
     schema: &str,
 ) -> Result<DbStructureResult, Box<dyn Error>> {
@@ -336,7 +336,7 @@ pub fn get_db_structure(
     })
 }
 
-pub fn generate_create_table_query(tables: &Vec<Table>) -> String {
+fn generate_create_table_query(tables: &Vec<Table>) -> String {
     let mut create_queries = vec![];
     for t in tables {
         let mut col_queries: Vec<String> = vec![];
