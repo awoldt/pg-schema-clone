@@ -1,3 +1,10 @@
+This is a easy-to-use cli tool for cloning entire schemas from a source database to a target databasa. It clones:
+- tables
+- columns  
+- primary keys
+- foreign keys
+- extensions (you will need to download manually on source database before running command)
+
 ```bash
 cargo run -- \
   --source-host <SOURCE_HOST> \
@@ -13,8 +20,7 @@ cargo run -- \
   --target-database <TARGET_DATABASE> \
   [--target-requires-tls]
 ```
-
-## Linux Requirements
+---
 
 If your database provider requires SSL/TLS connections, OpenSSL must be installed.
 
