@@ -1,4 +1,4 @@
-This is a easy-to-use cli tool for cloning entire schemas from a source database to a target databasa. It clones:
+This is a easy-to-use cli tool for cloning entire schemas from a source database to a target database. It clones:
 - tables
 - columns  
 - primary keys
