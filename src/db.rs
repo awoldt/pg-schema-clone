@@ -1,6 +1,7 @@
 use native_tls::TlsConnector;
 use postgres::{Client, Error as PostgresError, NoTls};
 use postgres_native_tls::MakeTlsConnector;
+use std::io::{self, Write};
 use std::{collections::HashMap, error::Error};
 
 // this contains all the info we need about the source db
@@ -440,13 +441,14 @@ pub fn remove_target_tables(
 }
 
 pub fn has_tables(
-    client: &mut postgres::Transaction<'_>,
-    schema: &str,
-) -> Result<i32, PostgresError> {
+    target_client: &mut postgres::Transaction<'_>,
+    target_db_config: &DbConfig,
+) -> Result<bool, PostgresError> {
     // this is mainly used to check if the target db already has tables
-    // returns the number of tables
+    // use must confirm if they want to continue or not
+    // returns "y" or "n" to the main file that calls this
 
-    let q = client.query(
+    let q = target_client.query(
         "
     SELECT table_name
     FROM information_schema.tables
@@ -454,10 +456,40 @@ pub fn has_tables(
     AND table_type = 'BASE TABLE'
     ORDER BY table_name;
     ",
-        &[&schema],
+        &[&target_db_config.schema],
     )?;
 
-    Ok(q.len() as i32)
+    let num_of_target_tables = q.len() as i32;
+
+    if q.len() as i32 > 0 {
+        loop {
+            print!(
+                "Your target database already has {} tables. Would you like to continue (y/n): ",
+                num_of_target_tables
+            );
+
+            io::stdout().flush().unwrap();
+            let mut confirm = String::new();
+            io::stdin()
+                .read_line(&mut confirm)
+                .expect("error while reading input");
+            confirm = String::from(confirm.trim().to_lowercase());
+
+            match confirm.as_str() {
+                "n" => {
+                    return Ok(false); // end program
+                }
+                "y" => {
+                    remove_target_tables(target_client, &target_db_config.schema)?;
+
+                    return Ok(true);
+                }
+                _ => continue,
+            }
+        }
+    } else {
+        return Ok(true); // if no target tables, just continue on
+    }
 }
 
 // this function will apply all the necessary extenstions, tables, and columns

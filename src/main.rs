@@ -1,9 +1,8 @@
 mod db;
 
 use clap::Parser;
-use db::{DbConfig, create_target_schema, has_tables, remove_target_tables};
+use db::{DbConfig, create_target_schema, has_tables};
 use postgres::Client;
-use std::io::{self, Write};
 use std::time::Instant;
 
 #[derive(Parser)]
@@ -105,45 +104,15 @@ fn main() {
     // first check to see if the target db already has tables
     // in the specified schema
     // if so, the user must confirm to continue (will delete all those tables)
-    let num_of_target_tables = match has_tables(&mut target_transaction, &target_db_config.schema) {
+    let remove_target_tables = match has_tables(&mut target_transaction, &target_db_config) {
         Ok(x) => x,
         Err(e) => {
             println!("ERROR: {:#?}", e);
             return;
         }
     };
-
-    if num_of_target_tables > 0 {
-        loop {
-            print!(
-                "Your target database already has {} tables. Would you like to continue (y/n): ",
-                num_of_target_tables
-            );
-
-            io::stdout().flush().unwrap();
-            let mut confirm = String::new();
-            io::stdin()
-                .read_line(&mut confirm)
-                .expect("error while reading input");
-            confirm = String::from(confirm.trim().to_lowercase());
-
-            match confirm.as_str() {
-                "n" => {
-                    return; // end program
-                }
-                "y" => {
-                    match remove_target_tables(&mut target_transaction, &target_db_config.schema) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            println!("ERROR: {:#?}", e);
-                            return;
-                        }
-                    }
-                    break;
-                }
-                _ => continue,
-            }
-        }
+    if !remove_target_tables {
+        return; // end program
     }
 
     let start_time = Instant::now();
