@@ -8,6 +8,7 @@ use std::{collections::HashMap, error::Error};
 struct DbStructureResult {
     tables: Vec<Table>,
     extensions: Vec<String>,
+    views: Vec<View>,
 }
 
 struct Table {
@@ -15,6 +16,11 @@ struct Table {
     columns: Vec<Column>,
     primary_keys: Vec<PrimaryKey>,
     foreign_keys: Vec<ForeignKey>,
+}
+
+struct View {
+    name: String,
+    definition: String,
 }
 
 struct ColumnType {
@@ -58,6 +64,7 @@ pub struct DbConfig {
 pub struct CreatTargetSchemaResult {
     pub tables_created: i32,
     pub columns_created: i32,
+    pub views_created: i32,
 }
 
 impl DbConfig {
@@ -94,6 +101,7 @@ fn get_db_structure(
 ) -> Result<DbStructureResult, Box<dyn Error>> {
     let mut tables: Vec<Table> = vec![];
     let mut extensions: Vec<String> = vec![];
+    let mut views: Vec<View> = vec![];
 
     // get all the tables
     let table_results = client.query(
@@ -202,6 +210,29 @@ fn get_db_structure(
                 break;
             }
         }
+    }
+
+    // get all the views
+    let views_results = client.query(
+        "
+        SELECT
+            viewname,
+            definition
+        FROM pg_views
+        WHERE schemaname = $1
+        ORDER BY viewname;
+    ",
+        &[&schema],
+    )?;
+
+    for v in &views_results {
+        let name: &str = v.get("viewname");
+        let definition: &str = v.get("definition");
+
+        views.push(View {
+            name: name.to_string(),
+            definition: definition.to_string(),
+        });
     }
 
     // get the extensions of database
@@ -331,8 +362,9 @@ fn get_db_structure(
     }
 
     Ok(DbStructureResult {
-        tables: tables,
-        extensions: extensions,
+        tables,
+        extensions,
+        views,
     })
 }
 
@@ -538,14 +570,30 @@ pub fn create_target_schema(
         }
     }
 
+    // now add all the views
+    for v in &db_structure.views {
+        target_client.execute(
+            &format!(
+                "
+            CREATE VIEW {} AS
+            {};
+        ",
+                v.name, v.definition
+            ),
+            &[],
+        )?;
+    }
+
     let mut num_of_columns = 0;
     for t in &db_structure.tables {
         for _c in &t.columns {
             num_of_columns += 1;
         }
     }
+
     Ok(CreatTargetSchemaResult {
         tables_created: db_structure.tables.len() as i32,
         columns_created: num_of_columns,
+        views_created: db_structure.views.len() as i32,
     })
 }

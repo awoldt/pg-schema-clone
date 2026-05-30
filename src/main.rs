@@ -178,11 +178,13 @@ fn main() {
 
 Tables created: {}
 Columns created: {}
+Views created: {}
 Completed in: {:.2?}
 
 ",
         final_result.tables_created,
         final_result.columns_created,
+        final_result.views_created,
         start_time.elapsed()
     );
 }
