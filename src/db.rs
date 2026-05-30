@@ -6,7 +6,7 @@ use std::{collections::HashMap, error::Error};
 
 // this contains all the info we need about the source db
 // that needs to be applied to the target db
-struct DbStructureResult {
+pub struct DbStructureResult {
     tables: Vec<Table>,
     extensions: Vec<String>,
     views: Vec<View>,
@@ -96,7 +96,7 @@ impl DbConfig {
     }
 }
 
-fn get_db_structure(
+pub fn get_db_structure(
     client: &mut Client,
     schema: &str,
 ) -> Result<DbStructureResult, Box<dyn Error>> {
@@ -503,14 +503,9 @@ pub fn check_target_schema(
 // this function will apply all the necessary extenstions, tables, views, and columns
 // from the source database to the target database
 pub fn create_target_schema(
-    source_client: &mut Client,
-    source_db_config: DbConfig,
     target_client: &mut postgres::Transaction<'_>,
+    db_structure: DbStructureResult
 ) -> Result<CreatTargetSchemaResult, Box<dyn Error>> {
-    // first get the entire schema table structure from the source database
-    // this will include all the important details needed for cloning a schema
-    let db_structure = get_db_structure(source_client, &source_db_config.schema)?;
-
     // add the extensions to the db first before adding all the
     // tables and columns
     for ext in &db_structure.extensions {

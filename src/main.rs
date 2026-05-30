@@ -1,7 +1,7 @@
 mod db;
 
 use clap::Parser;
-use db::{DbConfig, check_target_schema, create_target_schema};
+use db::{DbConfig, check_target_schema, create_target_schema, get_db_structure};
 use postgres::Client;
 use std::time::Instant;
 
@@ -102,8 +102,7 @@ fn main() {
     };
 
     // first check to see if the target db already has tables
-    // in the specified schema
-    // if so, the user must confirm to continue (will delete all those tables/views)
+    // if so, the user must confirm to delete before continuing
     let clear_target_schema = match check_target_schema(&mut target_transaction, &target_db_config)
     {
         Ok(x) => x,
@@ -118,13 +117,18 @@ fn main() {
 
     let start_time = Instant::now();
 
-    // this is the single badass funciton that will do all the stuff we need
-    // to "clone" a source database to a target database
-    let final_result = match create_target_schema(
-        &mut source_client,
-        source_db_config,
-        &mut target_transaction,
-    ) {
+    // first get the entire schema structure from the source database
+    // this will include all the important details needed for cloning a schema
+    let db_structure = match get_db_structure(&mut source_client, &source_db_config.schema) {
+        Ok(x) => x,
+        Err(e) => {
+            println!("{:?}", e);
+            return;
+        }
+    };
+
+    // once we have the strucutre of the source schema, we can apply to the target database
+    let final_result = match create_target_schema(&mut target_transaction, db_structure) {
         Ok(x) => x,
         Err(e) => {
             println!("{:?}", e);
