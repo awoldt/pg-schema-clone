@@ -446,7 +446,6 @@ pub fn has_tables(
 ) -> Result<bool, PostgresError> {
     // this is mainly used to check if the target db already has tables
     // use must confirm if they want to continue or not
-    // returns "y" or "n" to the main file that calls this
 
     let q = target_client.query(
         "
