@@ -500,7 +500,7 @@ pub fn check_target_schema(
     }
 }
 
-// this function will apply all the necessary extenstions, tables, and columns
+// this function will apply all the necessary extenstions, tables, views, and columns
 // from the source database to the target database
 pub fn create_target_schema(
     source_client: &mut Client,
