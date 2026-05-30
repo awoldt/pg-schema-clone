@@ -444,8 +444,8 @@ pub fn check_target_schema(
     target_client: &mut postgres::Transaction<'_>,
     target_db_config: &DbConfig,
 ) -> Result<bool, PostgresError> {
-    // this is mainly used to check if the target db already has tables
-    // use must confirm if they want to continue or not
+    // this is mainly used to check if the target db already has tables/views
+    // user must confirm if they want to continue or not
 
     let tables_query = target_client.query(
         "

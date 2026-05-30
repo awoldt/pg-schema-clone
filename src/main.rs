@@ -103,7 +103,7 @@ fn main() {
 
     // first check to see if the target db already has tables
     // in the specified schema
-    // if so, the user must confirm to continue (will delete all those tables)
+    // if so, the user must confirm to continue (will delete all those tables/views)
     let clear_target_schema = match check_target_schema(&mut target_transaction, &target_db_config)
     {
         Ok(x) => x,
