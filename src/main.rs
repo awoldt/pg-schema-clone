@@ -1,7 +1,7 @@
 mod db;
 
 use clap::Parser;
-use db::{DbConfig, create_target_schema, has_tables};
+use db::{DbConfig, check_target_schema, create_target_schema};
 use postgres::Client;
 use std::time::Instant;
 
@@ -104,14 +104,15 @@ fn main() {
     // first check to see if the target db already has tables
     // in the specified schema
     // if so, the user must confirm to continue (will delete all those tables)
-    let remove_target_tables = match has_tables(&mut target_transaction, &target_db_config) {
+    let clear_target_schema = match check_target_schema(&mut target_transaction, &target_db_config)
+    {
         Ok(x) => x,
         Err(e) => {
             println!("ERROR: {:#?}", e);
             return;
         }
     };
-    if !remove_target_tables {
+    if !clear_target_schema {
         return; // end program
     }
 

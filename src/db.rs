@@ -440,54 +440,63 @@ pub fn remove_target_tables(
     Ok(())
 }
 
-pub fn has_tables(
+pub fn check_target_schema(
     target_client: &mut postgres::Transaction<'_>,
     target_db_config: &DbConfig,
 ) -> Result<bool, PostgresError> {
     // this is mainly used to check if the target db already has tables
     // use must confirm if they want to continue or not
 
-    let q = target_client.query(
+    let tables_query = target_client.query(
         "
-    SELECT table_name
-    FROM information_schema.tables
-    WHERE table_schema = $1
-    AND table_type = 'BASE TABLE'
-    ORDER BY table_name;
+        SELECT tablename
+        FROM pg_tables
+        WHERE schemaname = $1;
     ",
         &[&target_db_config.schema],
     )?;
 
-    let num_of_target_tables = q.len() as i32;
+    let views_query = target_client.query(
+        "
+        SELECT
+            viewname,
+            definition
+            FROM pg_views
+        WHERE schemaname = $1;
+    ",
+        &[&target_db_config.schema],
+    )?;
 
-    if q.len() as i32 > 0 {
-        loop {
-            print!(
-                "Your target database already has {} tables. Would you like to continue (y/n): ",
-                num_of_target_tables
-            );
+    let num_of_target_tables = tables_query.len() as i32;
+    let num_of_target_views = views_query.len() as i32;
 
-            io::stdout().flush().unwrap();
-            let mut confirm = String::new();
-            io::stdin()
-                .read_line(&mut confirm)
-                .expect("error while reading input");
-            confirm = String::from(confirm.trim().to_lowercase());
+    if num_of_target_tables == 0 && num_of_target_views == 0 {
+        return Ok(true); // just continue, nothing to remove
+    }
 
-            match confirm.as_str() {
-                "n" => {
-                    return Ok(false); // end program
-                }
-                "y" => {
-                    remove_target_tables(target_client, &target_db_config.schema)?;
+    loop {
+        print!(
+            "Your target database already has existing tables/views. Would you like to continue (y/n): "
+        );
 
-                    return Ok(true);
-                }
-                _ => continue,
+        io::stdout().flush().unwrap();
+        let mut confirm = String::new();
+        io::stdin()
+            .read_line(&mut confirm)
+            .expect("error while reading input");
+        confirm = String::from(confirm.trim().to_lowercase());
+
+        match confirm.as_str() {
+            "n" => {
+                return Ok(false); // end program
             }
+            "y" => {
+                remove_target_tables(target_client, &target_db_config.schema)?;
+
+                return Ok(true);
+            }
+            _ => continue,
         }
-    } else {
-        return Ok(true); // if no target tables, just continue on
     }
 }
 
