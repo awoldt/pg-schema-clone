@@ -1,18 +1,18 @@
 use native_tls::TlsConnector;
 use postgres::{Client, Error as PostgresError, NoTls};
 use postgres_native_tls::MakeTlsConnector;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::{collections::HashMap, error::Error};
 
 // this contains all the info we need about the source db
 // that needs to be applied to the target db
 pub struct DbStructureResult {
-    tables: Vec<Table>,
+    pub tables: Vec<Table>,
     extensions: Vec<String>,
     views: Vec<View>,
 }
 
-struct Table {
+pub struct Table {
     name: String,
     columns: Vec<Column>,
     primary_keys: Vec<PrimaryKey>,
@@ -504,7 +504,7 @@ pub fn check_target_schema(
 // from the source database to the target database
 pub fn create_target_schema(
     target_client: &mut postgres::Transaction<'_>,
-    db_structure: DbStructureResult
+    db_structure: &DbStructureResult,
 ) -> Result<CreatTargetSchemaResult, Box<dyn Error>> {
     // add the extensions to the db first before adding all the
     // tables and columns
@@ -631,4 +631,28 @@ pub fn create_target_schema(
         columns_created: num_of_columns,
         views_created: db_structure.views.len() as i32,
     })
+}
+
+pub fn copy_data(
+    source_client: &mut Client,
+    target_client: &mut postgres::Transaction<'_>,
+    tables: &Vec<Table>,
+) -> Result<(), Box<dyn Error>> {
+    // copies data from source -> target database
+    // we need to use 'copy' postgres query cause this might deal with
+    // massive amounts of data
+
+    // the order in which we loop through tables matters
+    // add all "parent" tables first
+    for t in tables {
+        let mut reader = source_client.copy_out(&format!("COPY {} TO STDOUT;", t.name))?;
+        let mut buf = vec![];
+        reader.read_to_end(&mut buf)?;
+
+        let mut writer = target_client.copy_in(&format!("COPY {} FROM STDIN", t.name))?;
+        writer.write_all(&mut buf)?;
+        writer.finish()?;
+    }
+
+    Ok(())
 }
