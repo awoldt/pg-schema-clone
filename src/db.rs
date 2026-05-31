@@ -642,8 +642,6 @@ pub fn copy_data(
     // we need to use 'copy' postgres query cause this might deal with
     // massive amounts of data
 
-    // the order in which we loop through tables matters
-    // add all "parent" tables first
     for t in tables {
         let mut reader = source_client.copy_out(&format!("COPY {} TO STDOUT;", t.name))?;
         let mut buf = vec![];

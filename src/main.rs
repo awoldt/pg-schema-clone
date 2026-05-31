@@ -89,10 +89,10 @@ fn main() {
     // before we do anything, ask the user if they want to "clone" or "clone + import"
     // "clone" will just apply the schema to the target database with no data
     // "clone + import" will apply the schema to the target database AND copy all data to the target database
-    let mut program_action: ProgramAction;
+    let program_action: ProgramAction;
     loop {
         print!(
-            "Select an operation:\n1) Clone schema\n2) Clone schema and import data\nChoice [1-2]:"
+            "Select an operation:\n1) Clone schema\n2) Clone schema and import data\nChoice [1-2]: "
         );
         io::stdout().flush().unwrap();
         let mut action = String::new();
