@@ -1,4 +1,4 @@
-This is a easy-to-use cli tool for cloning entire postgres schemas from a source database to a target database. It clones:
+This is a easy-to-use cli tool for cloning entire postgres schemas from a source database to a target database. It can also copy table data from a source database. This tool will clone:
 - tables
 - columns  
 - views
